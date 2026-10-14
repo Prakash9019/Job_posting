@@ -1,0 +1,50 @@
+{
+  "name": "temp-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "node scripts/prepare-db.mjs && next build",
+    "postinstall": "node scripts/prepare-db.mjs",
+    "db:generate": "node scripts/prepare-db.mjs",
+    "db:deploy": "prisma migrate deploy --config prisma7.config.ts",
+    "start": "next start",
+    "lint": "eslint",
+    "migrate:secret": "node --env-file=.env --import tsx scripts/migrate-encryption-key.ts",
+    "test": "npm run test:security",
+    "test:audit": "node --env-file=.env --import tsx scripts/test-audit-verification.ts",
+    "test:security": "node --env-file=.env --import tsx scripts/test-security.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.28.0",
+    "@libsql/client": "^0.18.0",
+    "@prisma/adapter-libsql": "^7.10.0",
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "@vercel/blob": "^2.8.1",
+    "clsx": "^2.1.1",
+    "googleapis": "^178.0.0",
+    "lucide-react": "^1.55.0",
+    "mammoth": "^1.13.0",
+    "next": "16.4.0",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.23.1",
+    "prisma": "^7.10.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "^3.7.0",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "^4",
+    "@types/node": "^20",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --background: #030712;
+  --foreground: #f9fafb;
+}
+
+body {
+  overflow-wrap: anywhere;
+  background: radial-gradient(circle at top right, rgba(99, 102, 241, 0.08), transparent 40%),
+              radial-gradient(circle at bottom left, rgba(168, 85, 247, 0.05), transparent 40%),
+              #030712;
+  color: #f3f4f6;
+  min-height: 100vh;
+}
+
+button, input, select, textarea { touch-action: manipulation; }
+:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 3px; }
+@media (max-width: 639px) {
+  input:not([type="checkbox"]), select, textarea { font-size: 16px !important; min-width: 0; }
+  button { min-height: 44px; }
+  input[type="checkbox"] { width: 22px; height: 22px; }
+  header.sticky { position: relative; }
+  .fixed.inset-0 { padding: 8px; align-items: flex-start; padding-top: max(8px, env(safe-area-inset-top)); }
+  .fixed.inset-0 > div { max-height: calc(100dvh - 16px); overflow-y: auto; min-width: 0; }
+  .fixed.inset-0 .p-6 { padding: 16px; }
+  .fixed.inset-0 .px-6 { padding-left: 16px; padding-right: 16px; }
+  .fixed.inset-0 .justify-between { flex-wrap: wrap; gap: 8px; }
+  .fixed.inset-0 .font-mono { overflow-wrap: anywhere; }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Glassmorphism styling */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-card {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.glass-card:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+}

@@ -1,0 +1,181 @@
+// Prisma Schema for LinkedIn Screenshot Job Application Manager
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String         @id
+  name          String
+  email         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  gmailAccounts GmailAccount[]
+  resumes       Resume[]
+  batches       Batch[]
+  emailDrafts   EmailDraft[]
+  sendAttempts  SendAttempt[]
+}
+
+model GmailAccount {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email                 String
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String?
+  tokenExpiry           DateTime?
+  scope                 String?
+  isConnected           Boolean   @default(true)
+  lastSyncedAt          DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([userId, email])
+}
+
+model Resume {
+  id            String       @id @default(cuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fileName      String
+  filePath      String
+  fileSize      Int
+  mimeType      String       @default("application/pdf")
+  extractedText String
+  isActive      Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  batches       Batch[]
+  emailDrafts   EmailDraft[]
+}
+
+model Batch {
+  id               String       @id @default(cuid())
+  userId           String
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  status           String       @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
+  totalScreenshots Int          @default(0)
+  processedCount   Int          @default(0)
+  failedCount      Int          @default(0)
+  resumeId         String?
+  resume           Resume?      @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  screenshots      Screenshot[]
+  emailDrafts      EmailDraft[]
+}
+
+model Screenshot {
+  id           String            @id @default(cuid())
+  batchId      String
+  batch        Batch             @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  fileName     String
+  filePath     String
+  fileSize     Int
+  mimeType     String
+  fileHash     String
+  status       String            @default("PENDING") // PENDING, PROCESSING, COMPLETED, FAILED
+  errorMessage String?
+  retryCount   Int               @default(0)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  result       ExtractionResult?
+  urls         ExtractedUrl[]
+  emailDrafts  EmailDraft[]
+
+  @@index([batchId])
+  @@index([fileHash])
+}
+
+model ExtractionResult {
+  id                     String     @id @default(cuid())
+  screenshotId           String     @unique
+  screenshot             Screenshot @relation(fields: [screenshotId], references: [id], onDelete: Cascade)
+  category               String     // JOB_POST, RECRUITER_CONTACT, LINKEDIN_PROFILE, APPLICATION_PORTAL, UNRELATED, UNCERTAIN
+  companyName            String?
+  jobTitle               String?
+  recipientEmail         String?
+  jobDescription         String?
+  requiredSkills         String?    // JSON string array
+  experienceRequirements String?
+  location               String?
+  workMode               String?    // Remote, Hybrid, On-site
+  contactName            String?
+  contactRole            String?
+  evidenceText           String?
+  confidence             String     @default("MEDIUM") // HIGH, MEDIUM, LOW
+  manualReviewReason     String?
+  rawAiResponse          String?
+  createdAt              DateTime   @default(now())
+  updatedAt              DateTime   @updatedAt
+}
+
+model ExtractedUrl {
+  id           String     @id @default(cuid())
+  screenshotId String
+  screenshot   Screenshot @relation(fields: [screenshotId], references: [id], onDelete: Cascade)
+  url          String
+  urlType      String     // LINKEDIN, APPLICATION_PORTAL, OTHER
+  title        String?
+  createdAt    DateTime   @default(now())
+
+  @@index([screenshotId])
+  @@index([url])
+}
+
+model EmailDraft {
+  id               String        @id @default(cuid())
+  screenshotId     String?
+  screenshot       Screenshot?   @relation(fields: [screenshotId], references: [id], onDelete: SetNull)
+  batchId          String
+  batch            Batch         @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resumeId         String?
+  resume           Resume?       @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  companyName      String
+  jobTitle         String
+  recipientEmail   String
+  subject          String
+  body             String
+  generationStatus String        @default("GENERATED") // GENERATED, REGENERATED, FAILED
+  reviewStatus     String        @default("NEEDS_REVIEW") // NEEDS_REVIEW, APPROVED, REJECTED
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  sendAttempts     SendAttempt[]
+
+  @@index([batchId])
+  @@index([userId])
+}
+
+model SendAttempt {
+  id             String      @id @default(cuid())
+  draftId        String
+  draft          EmailDraft  @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderEmail    String
+  recipientEmail String
+  subject        String
+  status         String      @default("PENDING") // PENDING, SENDING, SENT, FAILED, UNKNOWN
+  gmailMessageId String?
+  gmailThreadId  String?
+  errorMessage   String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([draftId])
+  @@index([userId])
+}
