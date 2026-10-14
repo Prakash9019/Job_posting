@@ -8,7 +8,7 @@ export function getStorageProvider(): StorageProvider {
   if (instance) return instance;
 
   const providerType = (process.env.STORAGE_PROVIDER || "local").toLowerCase();
-  if (process.env.VERCEL && providerType !== "blob") throw new Error("Configure STORAGE_PROVIDER=blob and a private Vercel Blob store.");
+  if (process.env.VERCEL && providerType !== "blob") throw new Error("Configure STORAGE_PROVIDER=blob and a Vercel Blob store.");
 
   switch (providerType) {
     case "blob":

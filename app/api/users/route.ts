@@ -21,8 +21,6 @@ export async function GET(req: NextRequest) {
     const users = await prisma.user.findMany({
       include: {
         gmailAccounts: {
-          // Strictly isolate Gmail account info: only return for the authenticated session user
-          where: session ? { userId: session.userId } : { id: "__none__" },
           select: {
             id: true,
             email: true,
@@ -32,7 +30,7 @@ export async function GET(req: NextRequest) {
           },
         },
         resumes: {
-          where: session ? { userId: session.userId, isActive: true } : { id: "__none__" },
+          where: { isActive: true },
           take: 1,
         },
       },

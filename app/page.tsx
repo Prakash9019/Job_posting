@@ -69,7 +69,7 @@ export default function DashboardPage() {
   } | null>(null);
 
   const currentUser = users.find((u) => u.id === activeUserId) || users[0];
-  const connectedAccount = currentUser?.gmailAccounts?.find((g) => g.isConnected && g.email === currentUser.email);
+  const connectedAccount = currentUser?.gmailAccounts?.find((g) => g.isConnected);
   const activeResume = resumes.find((r) => r.isActive);
 
   const handleSelectUser = (newUserId: string) => {
@@ -85,6 +85,7 @@ export default function DashboardPage() {
       type: "success",
       message: `Successfully authenticated as ${verifiedUserId === "user_a" ? "User A" : "User B"}`,
     });
+    void fetchData();
   };
 
   const handleLogout = async () => {
@@ -105,7 +106,7 @@ export default function DashboardPage() {
     async function initSession() {
       try {
         const sessionRes = await fetch("/api/auth/session");
-        const sessionData = await sessionRes.json();
+        const sessionData = await sessionRes.json().catch(() => ({}));
         if (sessionData.authenticated && sessionData.user?.id) {
           setActiveUserId(sessionData.user.id);
         } else {
@@ -141,6 +142,14 @@ export default function DashboardPage() {
         fetch("/api/resumes"),
       ]);
 
+      const parseJson = async (r: Response) => {
+        try {
+          return await r.json();
+        } catch {
+          return {};
+        }
+      };
+
       const [
         usersData,
         overviewData,
@@ -150,13 +159,13 @@ export default function DashboardPage() {
         historyData,
         resumesData,
       ] = await Promise.all([
-        usersRes.json(),
-        overviewRes.json(),
-        draftsRes.json(),
-        linkedInRes.json(),
-        appLinksRes.json(),
-        historyRes.json(),
-        resumesRes.json(),
+        parseJson(usersRes),
+        parseJson(overviewRes),
+        parseJson(draftsRes),
+        parseJson(linkedInRes),
+        parseJson(appLinksRes),
+        parseJson(historyRes),
+        parseJson(resumesRes),
       ]);
 
       if (usersData.users) setUsers(usersData.users);
@@ -203,6 +212,7 @@ export default function DashboardPage() {
             type: "success",
             message: "Google account authorized and connected successfully!",
           });
+          void fetchData();
         } else if (authError) {
           setNotification({
             type: "error",
@@ -211,7 +221,7 @@ export default function DashboardPage() {
         }
       }, 0);
     }
-  }, []);
+  }, [fetchData]);
 
   // Handle Send Confirmation Trigger
   const handleOpenSendConfirmation = (selectedDrafts: EmailDraftItem[]) => {

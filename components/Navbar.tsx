@@ -61,7 +61,7 @@ export default function Navbar({
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const currentUser = users.find((u) => u.id === activeUserId) || users[0];
-  const connectedAccount = currentUser?.gmailAccounts.find((g) => g.isConnected && g.email === currentUser.email);
+  const connectedAccount = currentUser?.gmailAccounts?.find((g) => g.isConnected);
   const activeResume = currentUser?.resumes?.[0];
 
   const handleConnectGmail = async () => {

@@ -14,7 +14,23 @@ export class AuthError extends Error {
     super(message);
     this.statusCode = statusCode;
     this.name = "AuthError";
+    Object.setPrototypeOf(this, new.target.prototype);
   }
+
+  static [Symbol.hasInstance](instance: unknown) {
+    return (
+      Boolean(instance) &&
+      typeof instance === "object" &&
+      ((instance as Error).name === "AuthError" || "statusCode" in (instance as Record<string, unknown>))
+    );
+  }
+}
+
+export function isAuthError(error: unknown): error is AuthError {
+  return (
+    error instanceof AuthError ||
+    (Boolean(error) && typeof error === "object" && ((error as Error).name === "AuthError" || "statusCode" in (error as Record<string, unknown>)))
+  );
 }
 
 /**
