@@ -472,7 +472,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                       {f.line && (
                         <button
                           onClick={() => {
-                            setFocusLine(f.line);
+                            setFocusLine(f.line ?? null);
                             preview.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                           }}
                           className="text-[11px] text-indigo-300 hover:text-indigo-200 underline font-medium"
