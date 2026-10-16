@@ -412,6 +412,7 @@ export default function DashboardPage() {
             <LinkedInTab
               links={linkedInLinks}
               onViewScreenshot={(id) => setViewingScreenshotId(id)}
+              onRefresh={fetchData}
             />
           )}
 
@@ -419,6 +420,7 @@ export default function DashboardPage() {
             <ApplicationsTab
               links={appLinks}
               onViewScreenshot={(id) => setViewingScreenshotId(id)}
+              onRefresh={fetchData}
             />
           )}
 
@@ -432,7 +434,7 @@ export default function DashboardPage() {
           )}
 
           {activeTab === "history" && (
-            <SentHistoryTab attempts={historyAttempts} />
+            <SentHistoryTab attempts={historyAttempts} onRefresh={fetchData} />
           )}
 
           {activeTab === "overview" && (

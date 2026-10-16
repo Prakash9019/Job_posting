@@ -2,6 +2,7 @@ import { google } from "googleapis";
 import { prisma } from "@/lib/db/prisma";
 import { encrypt, decrypt } from "@/lib/security/encryption";
 import { getStorageProvider } from "@/lib/storage";
+import { getCandidateFilename } from "@/lib/ats/tailor";
 
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
@@ -195,10 +196,15 @@ export function buildMimeMessage(params: {
   attachment?: {
     filename: string;
     content: Buffer;
-    contentType: string;
+    contentType?: string;
   };
+  attachments?: Array<{
+    filename: string;
+    content: Buffer;
+    contentType?: string;
+  }>;
 }): string {
-  const { from, to, subject, body, attachment } = params;
+  const { from, to, subject, body, attachment, attachments } = params;
   const boundary = `__boundary_${Date.now()}_${Math.random().toString(36).substring(2)}__`;
 
   const cleanSubject = subject.replace(/[\r\n]+/g, " ");
@@ -210,22 +216,29 @@ export function buildMimeMessage(params: {
   mime += `Subject: =?UTF-8?B?${Buffer.from(cleanSubject, "utf-8").toString("base64")}?=\r\n`;
   mime += `MIME-Version: 1.0\r\n`;
 
-  if (attachment) {
+  const allAttachments = attachments && attachments.length > 0
+    ? attachments
+    : (attachment ? [attachment] : []);
+
+  if (allAttachments.length > 0) {
     mime += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
     mime += `--${boundary}\r\n`;
     mime += `Content-Type: text/plain; charset="UTF-8"\r\n`;
     mime += `Content-Transfer-Encoding: 8bit\r\n\r\n`;
     mime += `${body}\r\n\r\n`;
 
-    mime += `--${boundary}\r\n`;
-    const cleanFilename = attachment.filename.replace(/["\r\n]/g, "");
-    mime += `Content-Type: ${attachment.contentType}; name="${cleanFilename}"\r\n`;
-    mime += `Content-Disposition: attachment; filename="${cleanFilename}"\r\n`;
-    mime += `Content-Transfer-Encoding: base64\r\n\r\n`;
-    // Chunk base64 into 76-character lines per RFC 2045
-    const base64Data = attachment.content.toString("base64");
-    const chunked = base64Data.match(/.{1,76}/g)?.join("\r\n") || base64Data;
-    mime += `${chunked}\r\n\r\n`;
+    for (const att of allAttachments) {
+      mime += `--${boundary}\r\n`;
+      const cleanFilename = att.filename.replace(/["\r\n]/g, "");
+      const contentType = att.contentType || "application/pdf";
+      mime += `Content-Type: ${contentType}; name="${cleanFilename}"\r\n`;
+      mime += `Content-Disposition: attachment; filename="${cleanFilename}"\r\n`;
+      mime += `Content-Transfer-Encoding: base64\r\n\r\n`;
+      // Chunk base64 into 76-character lines per RFC 2045
+      const base64Data = att.content.toString("base64");
+      const chunked = base64Data.match(/.{1,76}/g)?.join("\r\n") || base64Data;
+      mime += `${chunked}\r\n\r\n`;
+    }
     mime += `--${boundary}--\r\n`;
   } else {
     mime += `Content-Type: text/plain; charset="UTF-8"\r\n`;
@@ -308,28 +321,51 @@ export async function sendEmailDraft(params: {
 
   try {
     // 5. Read resume attachment if attached
-    let attachment: { filename: string; content: Buffer; contentType: string } | undefined;
+    let attachmentFilename = "Resume.pdf";
+    let pdfBuffer: Buffer | null = null;
+    let contentType = "application/pdf";
+
     if (draft.resume) {
       const storage = getStorageProvider();
       const resumeExists = await storage.exists(draft.resume.filePath);
       if (!resumeExists) {
         throw new Error(`Resume file not found at ${draft.resume.filePath}`);
       }
-      const buffer = await storage.readFile(draft.resume.filePath);
-      attachment = {
-        filename: draft.resume.fileName,
-        content: buffer,
-        contentType: draft.resume.mimeType || "application/pdf",
-      };
+      pdfBuffer = await storage.readFile(draft.resume.filePath);
+      contentType = draft.resume.mimeType || "application/pdf";
+
+      if (draft.resume.fileName && draft.resume.fileName !== "ATS_Optimized_Resume.pdf" && draft.resume.fileName !== "Resume.pdf") {
+        attachmentFilename = draft.resume.fileName;
+      } else if (draft.resume.extractedText) {
+        attachmentFilename = getCandidateFilename(draft.resume.extractedText);
+      } else if (profile.name) {
+        const parts = profile.name.trim().split(/\s+/).slice(0, 3);
+        attachmentFilename = `Resume_${parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join("_")}.pdf`;
+      }
     }
 
-    // 6. Build MIME message
+    // 6. Build MIME message with dynamic attachment header
     const raw = buildMimeMessage({
       from: `=?UTF-8?B?${Buffer.from(profile.name.replace(/[\r\n]/g, " ")).toString("base64")}?= <${senderEmail}>`,
       to: draft.recipientEmail,
       subject: draft.subject,
       body: draft.body,
-      attachment,
+      ...(pdfBuffer
+        ? {
+            attachment: {
+              filename: attachmentFilename,
+              content: pdfBuffer,
+              contentType,
+            },
+            attachments: [
+              {
+                filename: attachmentFilename,
+                content: pdfBuffer,
+                contentType,
+              },
+            ],
+          }
+        : {}),
     });
 
     // 7. Send via Gmail API

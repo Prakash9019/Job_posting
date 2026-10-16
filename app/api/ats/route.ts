@@ -13,26 +13,32 @@ export async function POST(req: NextRequest) {
     if (pending.has(userId)) return NextResponse.json({ success: false, error: "An analysis is already running. Please wait." }, { status: 429 });
     pending.add(userId); activeUser = userId;
     const form = await req.formData();
-    let resumeText = String(form.get("resumeText") || "").trim();
+    let resumeText = String(form.get("resumeText") || "").replace(/\r\n/g, "\n").trim();
     let method = "Edited text";
     const file = form.get("resume");
+    let rawLatex: string | undefined;
     if (file instanceof File && file.size) {
-      const parsed = await parseATSFile(file); resumeText = parsed.text; method = parsed.method;
+      const parsed = await parseATSFile(file);
+      resumeText = parsed.text.replace(/\r\n/g, "\n").trim();
+      method = parsed.method;
+      if ("rawLatex" in parsed && typeof parsed.rawLatex === "string") {
+        rawLatex = parsed.rawLatex;
+      }
     } else if (!resumeText && form.get("resumeId")) {
       const resume = await assertResumeAccess(String(form.get("resumeId")), userId);
-      resumeText = await getReadableResumeText(resume); method = "Saved resume text";
+      resumeText = (await getReadableResumeText(resume)).replace(/\r\n/g, "\n").trim(); method = "Saved resume text";
     }
     if (!isReadableResumeText(resumeText) || resumeText.length > 60000) throw new Error("Provide readable resume text between 50 and 60,000 characters.");
-    let jobText = String(form.get("jobText") || "").trim();
+    let jobText = String(form.get("jobText") || "").replace(/\r\n/g, "\n").trim();
     const jobImage = form.get("jobImage");
     if (jobImage instanceof File && jobImage.size) {
       if (file instanceof File && file.size + jobImage.size > 4 * 1024 * 1024) throw new Error("Combined files must be under 4 MB. Use smaller images or paste the job text.");
       const parsed = await parseATSFile(jobImage, true); jobText = [jobText, parsed.text].filter(Boolean).join("\n\n");
     }
     if (jobText.length > 30000) throw new Error("Job description must be under 30,000 characters.");
-    if (form.get("action") === "parse") return NextResponse.json({ success: true, resumeText, jobText, method });
+    if (form.get("action") === "parse") return NextResponse.json({ success: true, resumeText, jobText, method, rawLatex });
     const analysis = await analyzeResume(resumeText, jobText);
-    return NextResponse.json({ success: true, resumeText, jobText, method, analysis });
+    return NextResponse.json({ success: true, resumeText, jobText, method, analysis, rawLatex });
   } catch (error) {
     console.error("ATS review failed:", error);
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : "ATS analysis failed. Please retry." }, { status: error instanceof AuthError ? error.statusCode : 400 });

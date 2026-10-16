@@ -4,6 +4,7 @@ import { generateApplicationEmail } from "@/lib/ai/gemini";
 import { getStorageProvider } from "@/lib/storage";
 import { getReadableResumeText } from "@/lib/ai/resume";
 import { requireUser, assertDraftAccess, AuthError } from "@/lib/auth/authorization";
+import { autoTailorResumeToJD, compileLatexToPdfBuffer } from "@/lib/ats/tailor";
 
 export async function POST(
   req: NextRequest,
@@ -72,10 +73,55 @@ export async function POST(
     if (resumeText !== activeResume.extractedText) {
       await prisma.resume.update({ where: { id: activeResume.id }, data: { extractedText: resumeText } });
     }
+
+    const storage = getStorageProvider();
+    let sourceLatex: string | undefined;
+    if (activeResume.fileName.endsWith(".tex") || activeResume.mimeType.includes("tex")) {
+      const rawTexBuf = await storage.readFile(activeResume.filePath).catch(() => null);
+      if (rawTexBuf) sourceLatex = rawTexBuf.toString("utf-8");
+    }
+
+    let effectiveResumeId = activeResume.id;
+    let effectiveResumeText = resumeText;
+    let generationStatus = "REGENERATED";
+
+    try {
+      const jobText = [jobDetails.jobTitle, jobDetails.companyName, jobDetails.jobDescription].filter(Boolean).join("\n\n");
+      const tailored = await autoTailorResumeToJD({
+        resumeText,
+        sourceLatex,
+        jobText,
+        companyName: jobDetails.companyName || undefined,
+      });
+      effectiveResumeText = tailored.optimizedText;
+
+      const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex);
+      if (compiledPdf && compiledPdf.length > 0) {
+        const tailoredPath = `resumes/tailored-regen-${draft.id}-${Date.now()}.pdf`;
+        await storage.saveFile(tailoredPath, compiledPdf, "application/pdf");
+
+        const tailoredRecord = await prisma.resume.create({
+          data: {
+            userId,
+            fileName: tailored.attachmentFilename || "Resume.pdf",
+            filePath: tailoredPath,
+            fileSize: compiledPdf.length,
+            mimeType: "application/pdf",
+            extractedText: tailored.optimizedText,
+            isActive: false,
+          },
+        });
+        effectiveResumeId = tailoredRecord.id;
+        generationStatus = `ATS Tailored: ${tailored.baselineScore} → ${tailored.finalScore}/100`;
+      }
+    } catch (tailorErr) {
+      console.warn("Regenerate ATS tailoring fallback:", tailorErr);
+    }
+
     const regenerated = await generateApplicationEmail({
       jobDetails,
-      screenshot: draft.screenshot ? { content: await getStorageProvider().readFile(draft.screenshot.filePath), mimeType: draft.screenshot.mimeType } : undefined,
-      resumeText,
+      screenshot: draft.screenshot ? { content: await storage.readFile(draft.screenshot.filePath), mimeType: draft.screenshot.mimeType } : undefined,
+      resumeText: effectiveResumeText,
       senderName: draft.user.name || "Applicant",
       senderEmail: draft.user.email || undefined,
     });
@@ -85,8 +131,8 @@ export async function POST(
       data: {
         subject: regenerated.subject,
         body: regenerated.body,
-        resumeId: activeResume.id,
-        generationStatus: "REGENERATED",
+        resumeId: effectiveResumeId,
+        generationStatus,
         reviewStatus: "NEEDS_REVIEW",
       },
       include: {

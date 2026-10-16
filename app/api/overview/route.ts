@@ -85,7 +85,7 @@ export async function GET(req: NextRequest) {
           result: true,
           urls: true,
           batch: {
-            select: { name: true, createdAt: true },
+            select: { name: true, createdAt: true, updatedAt: true },
           },
         },
         orderBy: { createdAt: "desc" },

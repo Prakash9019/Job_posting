@@ -83,7 +83,7 @@ export async function extractFromScreenshot(
 ): Promise<GeminiExtraction> {
   const client = getGeminiClient();
 
-  const modelName = process.env.GEMINI_EXTRACTION_MODEL || process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const modelName = process.env.GEMINI_EXTRACTION_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-pro";
 
   try {
     const base64Data = imageBuffer.toString("base64");
@@ -110,7 +110,7 @@ export async function extractFromScreenshot(
         systemInstruction: EXTRACTION_SYSTEM_INSTRUCTION,
         ...(modelName.startsWith("gemini-3") ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
         responseMimeType: "application/json",
-        temperature: 0.1,
+        temperature: 0,
       },
     });
 
@@ -144,8 +144,67 @@ export async function extractFromScreenshot(
       contactRole: null,
       evidenceText: null,
       confidence: "LOW",
-      manualReviewReason: `Extraction failed: ${error instanceof Error ? error.message : String(error)
-        }`,
+      manualReviewReason: `Extraction failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+export async function extractJobDetailsFromText(
+  rawText: string
+): Promise<GeminiExtraction> {
+  const client = getGeminiClient();
+  const modelName = process.env.GEMINI_EXTRACTION_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-pro";
+
+  try {
+    const response = await client.models.generateContent({
+      model: modelName,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `Raw Job Description / Post Text:\n"""\n${rawText}\n"""\n\n${EXTRACTION_USER_PROMPT}`,
+            },
+          ],
+        },
+      ],
+      config: {
+        systemInstruction: EXTRACTION_SYSTEM_INSTRUCTION,
+        ...(modelName.startsWith("gemini-3") ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
+        responseMimeType: "application/json",
+        temperature: 0,
+      },
+    });
+
+    const text = response.text?.trim() || "";
+    const cleanedJson = text
+      .replace(/^```json\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
+
+    const rawParsed = JSON.parse(cleanedJson);
+    return GeminiExtractionSchema.parse(rawParsed);
+  } catch (error: unknown) {
+    console.error("Gemini Text Extraction Error:", error);
+
+    return {
+      category: "JOB_POST",
+      companyName: null,
+      jobTitle: null,
+      recipientEmail: null,
+      linkedInUrls: [],
+      applicationUrls: [],
+      otherUrls: [],
+      jobDescription: rawText,
+      requiredSkills: [],
+      experienceRequirements: null,
+      location: null,
+      workMode: null,
+      contactName: null,
+      contactRole: null,
+      evidenceText: null,
+      confidence: "LOW",
+      manualReviewReason: `Extraction failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 }
@@ -256,7 +315,7 @@ Return JSON with keys:
 }
 `;
 
-  const modelName = process.env.GEMINI_EMAIL_MODEL || process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const modelName = process.env.GEMINI_EMAIL_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-pro";
 
   const response = await client.models.generateContent({
     model: modelName,

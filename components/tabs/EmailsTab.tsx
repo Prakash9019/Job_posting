@@ -15,7 +15,16 @@ import {
   Save,
   Check,
   Eye,
+  Sparkles,
+  Upload,
+  Loader2,
+  Plus,
+  X,
+  AlertCircle,
+  ArrowUpDown,
 } from "lucide-react";
+import DeleteConfirmationModal, { DeleteItemPreview } from "@/components/DeleteConfirmationModal";
+import { getRecordTimestamp, getEffectiveTimestampTime } from "@/lib/utils/formatDate";
 
 export interface EmailDraftItem {
   id: string;
@@ -29,6 +38,7 @@ export interface EmailDraftItem {
   generationStatus: string;
   reviewStatus: string;
   createdAt: string;
+  updatedAt?: string;
   resume?: {
     id: string;
     fileName: string;
@@ -67,7 +77,12 @@ export default function EmailsTab({
 }: EmailsTabProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [sortBy, setSortBy] = useState<"recent" | "oldest" | "company">("recent");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [draftsToDelete, setDraftsToDelete] = useState<EmailDraftItem[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const [editFormData, setEditFormData] = useState<{
     subject: string;
@@ -85,9 +100,83 @@ export default function EmailsTab({
   const [isSaving, setIsSaving] = useState(false);
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
 
-  // Filter drafts based on search and status
+  // Modal for creating a new tailored draft (Screenshot or pasted JD)
+  const [isNewModalOpen, setIsNewModalOpen] = useState(false);
+  const [newMode, setNewMode] = useState<"screenshot" | "paste">("screenshot");
+  const [pastedJD, setPastedJD] = useState("");
+  const [uploadedImageBase64, setUploadedImageBase64] = useState<string | null>(null);
+  const [uploadedImageName, setUploadedImageName] = useState("");
+  const [uploadedImageMime, setUploadedImageMime] = useState("image/png");
+  const [manualEmail, setManualEmail] = useState("");
+  const [manualCompany, setManualCompany] = useState("");
+  const [manualRole, setManualRole] = useState("");
+  const [isGeneratingNew, setIsGeneratingNew] = useState(false);
+  const [newModalError, setNewModalError] = useState<string | null>(null);
+  const [newModalSuccess, setNewModalSuccess] = useState<string | null>(null);
+
+  const handleScreenshotFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadedImageName(file.name);
+    setUploadedImageMime(file.type || "image/png");
+    const reader = new FileReader();
+    reader.onload = () => {
+      setUploadedImageBase64(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleCreateTailoredDraft = async () => {
+    setIsGeneratingNew(true);
+    setNewModalError(null);
+    try {
+      const payload: Record<string, string> = {};
+      if (newMode === "screenshot") {
+        if (!uploadedImageBase64) throw new Error("Please select a screenshot image to upload.");
+        payload.image = uploadedImageBase64;
+        payload.mimeType = uploadedImageMime;
+      } else {
+        if (!pastedJD.trim()) throw new Error("Please paste a job description or post text.");
+        payload.jobDescription = pastedJD.trim();
+      }
+
+      if (manualEmail.trim()) payload.recipientEmail = manualEmail.trim();
+      if (manualCompany.trim()) payload.companyName = manualCompany.trim();
+      if (manualRole.trim()) payload.jobTitle = manualRole.trim();
+
+      const res = await fetch("/api/drafts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to generate tailored application email.");
+      }
+
+      setNewModalSuccess(data.badge || `✓ Tailored ATS Resume Attached (Score: ${data.atsScore?.finalScore || 90}/100)`);
+      setTimeout(() => {
+        setIsNewModalOpen(false);
+        setNewModalSuccess(null);
+        setPastedJD("");
+        setUploadedImageBase64(null);
+        setUploadedImageName("");
+        setManualEmail("");
+        setManualCompany("");
+        setManualRole("");
+        onRefresh();
+      }, 1500);
+    } catch (err) {
+      setNewModalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsGeneratingNew(false);
+    }
+  };
+
+  // Filter and sort drafts based on search, status, and sort option
   const filteredDrafts = useMemo(() => {
-    return drafts.filter((draft) => {
+    const list = drafts.filter((draft) => {
       if (draft.sendAttempts?.some(attempt => attempt.status === "SENT")) return false;
       // Status filter
       if (statusFilter !== "ALL" && draft.reviewStatus !== statusFilter) {
@@ -107,10 +196,24 @@ export default function EmailsTab({
 
       return true;
     });
-  }, [drafts, statusFilter, searchQuery]);
 
-  const selectableDrafts = filteredDrafts.filter(draft => draft.reviewStatus !== "REJECTED" && !draft.sendAttempts?.some(attempt => ["SENDING", "UNKNOWN"].includes(attempt.status)));
-  const selectedDrafts = selectableDrafts.filter(draft => selectedIds.has(draft.id));
+    return list.sort((a, b) => {
+      if (sortBy === "recent") {
+        return getEffectiveTimestampTime(b.createdAt, b.updatedAt) - getEffectiveTimestampTime(a.createdAt, a.updatedAt);
+      }
+      if (sortBy === "oldest") {
+        return getEffectiveTimestampTime(a.createdAt, a.updatedAt) - getEffectiveTimestampTime(b.createdAt, b.updatedAt);
+      }
+      if (sortBy === "company") {
+        return a.companyName.localeCompare(b.companyName);
+      }
+      return 0;
+    });
+  }, [drafts, statusFilter, searchQuery, sortBy]);
+
+  const selectableDrafts = filteredDrafts;
+  const selectedDrafts = filteredDrafts.filter(draft => selectedIds.has(draft.id));
+  const sendableDrafts = selectedDrafts.filter(draft => draft.reviewStatus !== "REJECTED" && !draft.sendAttempts?.some(attempt => ["SENDING", "UNKNOWN"].includes(attempt.status)));
 
   // Select All scoped to filtered results
   const isAllSelected =
@@ -219,28 +322,59 @@ export default function EmailsTab({
     }
   };
 
-  // Delete draft
-  const handleDeleteDraft = async (draftId: string) => {
-    if (!confirm("Are you sure you want to delete this draft?")) return;
+  // Open delete confirmation for a single draft
+  const handleOpenDeleteSingle = (draft: EmailDraftItem) => {
+    setDraftsToDelete([draft]);
+    setDeleteConfirmOpen(true);
+  };
+
+  // Open delete confirmation for selected drafts
+  const handleOpenDeleteBulk = () => {
+    if (selectedDrafts.length === 0) return;
+    setDraftsToDelete(selectedDrafts);
+    setDeleteConfirmOpen(true);
+  };
+
+  // Execute hard permanent deletion
+  const handleExecuteDelete = async () => {
+    if (draftsToDelete.length === 0) return;
     try {
-      const res = await fetch(`/api/drafts/${draftId}`, {
+      setIsDeleting(true);
+      const res = await fetch("/api/drafts", {
         method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: draftsToDelete.map((d) => d.id) }),
       });
       const data = await res.json();
-      if (data.success) {
-        const next = new Set(selectedIds);
-        next.delete(draftId);
-        setSelectedIds(next);
-        onRefresh();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to delete drafts");
       }
-    } catch (err) {
-      alert("Error deleting draft: " + String(err));
+
+      const deletedIds = new Set(draftsToDelete.map((d) => d.id));
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        deletedIds.forEach((id) => next.delete(id));
+        return next;
+      });
+
+      setDeleteConfirmOpen(false);
+      setDraftsToDelete([]);
+      setFeedbackMessage({
+        type: "success",
+        text: `Permanently deleted ${data.count ?? draftsToDelete.length} draft${(data.count ?? draftsToDelete.length) === 1 ? "" : "s"} from database.`,
+      });
+      setTimeout(() => setFeedbackMessage(null), 4000);
+      onRefresh();
+    } catch (err: unknown) {
+      alert("Error deleting drafts: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsDeleting(false);
     }
   };
 
   // Bulk approve selected
   const handleBulkApprove = async () => {
-    const ids = selectedDrafts.map(draft => draft.id);
+    const ids = selectedDrafts.map((draft) => draft.id);
     if (ids.length === 0) return;
 
     for (const id of ids) {
@@ -262,9 +396,9 @@ export default function EmailsTab({
 
   // Handle Bulk Send Trigger
   const handleTriggerBulkSend = () => {
-    const selectedDraftsList = selectedDrafts;
+    const selectedDraftsList = sendableDrafts;
     if (selectedDraftsList.length === 0) {
-      alert("Please select at least one draft to send.");
+      alert("Please select at least one non-rejected draft to send.");
       return;
     }
     onOpenSendConfirmation(selectedDraftsList);
@@ -310,6 +444,30 @@ export default function EmailsTab({
               </button>
             ))}
           </div>
+
+          <div className="flex items-center gap-1.5 bg-slate-800 px-2.5 py-1.5 rounded-xl border border-slate-700/60 text-xs text-slate-300">
+            <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as "recent" | "oldest" | "company")}
+              className="bg-transparent text-xs text-white border-none focus:outline-none cursor-pointer"
+            >
+              <option value="recent" className="bg-slate-900 text-white">Recent First</option>
+              <option value="oldest" className="bg-slate-900 text-white">Oldest First</option>
+              <option value="company" className="bg-slate-900 text-white">Company (A-Z)</option>
+            </select>
+          </div>
+
+          <button
+            id="btn-open-tailored-draft-modal"
+            type="button"
+            onClick={() => setIsNewModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md shadow-emerald-900/30 transition-all cursor-pointer shrink-0"
+            title="Upload a job screenshot or paste a JD to auto-tailor your resume and draft an email"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>+ Tailor &amp; Draft</span>
+          </button>
         </div>
 
         {/* Bulk Selection Actions */}
@@ -338,6 +496,16 @@ export default function EmailsTab({
           {selectedDrafts.length > 0 && (
             <div className="flex items-center gap-2">
               <button
+                id="btn-bulk-delete"
+                onClick={handleOpenDeleteBulk}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/20 border border-rose-500/40 text-rose-300 hover:bg-rose-600/30 text-xs font-semibold transition-colors"
+                title="Permanently delete selected drafts"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span>Delete ({selectedDrafts.length})</span>
+              </button>
+
+              <button
                 id="btn-bulk-approve"
                 onClick={handleBulkApprove}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/30 text-xs font-semibold transition-colors"
@@ -349,15 +517,34 @@ export default function EmailsTab({
               <button
                 id="btn-bulk-send"
                 onClick={handleTriggerBulkSend}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/25 transition-all"
+                disabled={sendableDrafts.length === 0}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/25 transition-all disabled:opacity-50"
               >
                 <Send className="w-3.5 h-3.5" />
-                <span>Review &amp; Send ({selectedDrafts.length})</span>
+                <span>Review &amp; Send ({sendableDrafts.length})</span>
               </button>
             </div>
           )}
         </div>
       </div>
+
+      {feedbackMessage && (
+        <div
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between shadow-lg ${
+            feedbackMessage.type === "success"
+              ? "bg-emerald-950/80 border-emerald-500/40 text-emerald-200"
+              : "bg-rose-950/80 border-rose-500/40 text-rose-200"
+          }`}
+        >
+          <span>{feedbackMessage.text}</span>
+          <button
+            onClick={() => setFeedbackMessage(null)}
+            className="text-xs underline font-semibold ml-4 hover:opacity-80"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Drafts List */}
       {filteredDrafts.length === 0 ? (
@@ -378,6 +565,7 @@ export default function EmailsTab({
             const isEditing = editingDraftId === draft.id;
             const isRegenerating = regeneratingId === draft.id;
             const hasSentAttempt = draft.sendAttempts?.[0]?.status === "SENT";
+            const ts = getRecordTimestamp(draft.createdAt, draft.updatedAt);
 
             return (
               <div
@@ -410,6 +598,11 @@ export default function EmailsTab({
                         <span className="text-xs font-medium text-indigo-400">
                           {draft.jobTitle}
                         </span>
+                        {(draft.generationStatus?.includes("ATS Tailored") || draft.generationStatus?.includes("Tailored ATS")) && (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1 shadow-sm">
+                            ✓ Tailored ATS Resume Attached (Score: {draft.generationStatus.match(/→\s*(\d+)\/100/)?.[1] || draft.generationStatus.match(/(\d+)\/100/)?.[1] || "90+"}/100)
+                          </span>
+                        )}
                         {hasSentAttempt && (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
                             <CheckCircle className="w-3 h-3" />
@@ -423,11 +616,16 @@ export default function EmailsTab({
                         </span>
                         <span>•</span>
                         <span className="flex items-center gap-1 text-slate-300">
-                          <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                          <FileText className={`w-3.5 h-3.5 ${draft.resume?.fileName?.startsWith("Resume_") || draft.resume?.fileName === "ATS_Optimized_Resume.pdf" ? "text-emerald-400" : "text-indigo-400"}`} />
                           Attachment:{" "}
-                          <span className="font-semibold text-slate-200">
-                            {draft.resume?.fileName || activeResumeName || "No Resume Attached"}
+                          <span className={`font-semibold ${draft.resume?.fileName?.startsWith("Resume_") || draft.resume?.fileName === "ATS_Optimized_Resume.pdf" ? "text-emerald-300 font-mono" : "text-slate-200"}`}>
+                            {draft.resume?.fileName === "ATS_Optimized_Resume.pdf" ? "Resume.pdf (Tailored)" : (draft.resume?.fileName || (draft.generationStatus?.includes("ATS Tailored") ? "Resume.pdf (Tailored)" : (activeResumeName || "No Resume Attached")))}
                           </span>
+                        </span>
+                        <span>•</span>
+                        <span className="flex items-center gap-1 text-[11px] text-slate-400 font-medium" title={ts.display}>
+                          <Clock className="w-3.5 h-3.5 text-slate-500" />
+                          <span>{ts.display}</span>
                         </span>
                       </div>
                     </div>
@@ -506,9 +704,10 @@ export default function EmailsTab({
 
                     {/* Delete draft */}
                     <button
-                      onClick={() => handleDeleteDraft(draft.id)}
+                      id={`btn-delete-${draft.id}`}
+                      onClick={() => handleOpenDeleteSingle(draft)}
                       className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-colors"
-                      title="Delete Draft"
+                      title="Permanently Delete Draft"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -684,6 +883,194 @@ export default function EmailsTab({
           </div>
         </div>
       )}
+      {/* Modal: New Tailored Email from Screenshot or Pasted JD */}
+      {isNewModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Auto-Tailor Resume &amp; Draft Email</h3>
+                  <p className="text-[11px] text-slate-400">Gemini extraction (temp 0) + TeXLive PDF compiler</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isGeneratingNew) setIsNewModalOpen(false);
+                }}
+                disabled={isGeneratingNew}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Mode Tabs */}
+            <div className="grid grid-cols-2 gap-2 bg-slate-950/60 p-1 rounded-xl border border-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => setNewMode("screenshot")}
+                className={`py-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                  newMode === "screenshot"
+                    ? "bg-indigo-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Upload Screenshot</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewMode("paste")}
+                className={`py-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                  newMode === "paste"
+                    ? "bg-indigo-600 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Paste Job Description</span>
+              </button>
+            </div>
+
+            {newMode === "screenshot" ? (
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-300">
+                  Job Posting / Recruiter Post Screenshot
+                </label>
+                <div className="relative border-2 border-dashed border-slate-700 hover:border-emerald-500/60 rounded-xl p-5 text-center bg-slate-950/40 transition-colors">
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={handleScreenshotFileChange}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <Upload className="w-6 h-6 text-emerald-400 mx-auto mb-2" />
+                  <p className="text-xs font-medium text-slate-200">
+                    {uploadedImageName ? uploadedImageName : "Drop job screenshot or click to browse"}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">PNG, JPG, or WebP</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-slate-300">
+                  Job Description / Role Requirements
+                </label>
+                <textarea
+                  rows={4}
+                  placeholder="Paste the target job description, recruiter post, or LinkedIn message here..."
+                  value={pastedJD}
+                  onChange={(e) => setPastedJD(e.target.value)}
+                  className="w-full p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 resize-none font-sans"
+                />
+              </div>
+            )}
+
+            {/* Optional manual overrides */}
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-[10px] font-medium text-slate-400 mb-1">Recipient Email</label>
+                <input
+                  type="email"
+                  placeholder="Extracted via AI"
+                  value={manualEmail}
+                  onChange={(e) => setManualEmail(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-slate-400 mb-1">Company</label>
+                <input
+                  type="text"
+                  placeholder="Extracted via AI"
+                  value={manualCompany}
+                  onChange={(e) => setManualCompany(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-slate-400 mb-1">Role Title</label>
+                <input
+                  type="text"
+                  placeholder="Extracted via AI"
+                  value={manualRole}
+                  onChange={(e) => setManualRole(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+
+            {newModalError && (
+              <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>{newModalError}</span>
+              </div>
+            )}
+
+            {newModalSuccess && (
+              <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-1.5">
+                <Check className="w-4 h-4 shrink-0 text-emerald-400" />
+                <span>{newModalSuccess}</span>
+              </div>
+            )}
+
+            <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsNewModalOpen(false)}
+                disabled={isGeneratingNew}
+                className="px-3 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateTailoredDraft}
+                disabled={isGeneratingNew}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md shadow-emerald-900/30 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isGeneratingNew ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Analyzing &amp; Tailoring Resume...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Generate &amp; Attach Tailored Resume</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={deleteConfirmOpen}
+        onClose={() => {
+          if (!isDeleting) {
+            setDeleteConfirmOpen(false);
+            setDraftsToDelete([]);
+          }
+        }}
+        onConfirm={handleExecuteDelete}
+        itemType="email draft"
+        count={draftsToDelete.length}
+        items={draftsToDelete.map((d) => ({
+          id: d.id,
+          title: `${d.companyName} — ${d.jobTitle}`,
+          subtitle: `To: ${d.recipientEmail} | Subject: ${d.subject}`,
+        }))}
+        isDeleting={isDeleting}
+        warningNote="Hard delete will permanently erase the draft and any send attempt logs from the database."
+      />
     </div>
   );
 }

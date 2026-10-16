@@ -2,13 +2,17 @@ import { GoogleGenAI } from "@google/genai";
 import mammoth from "mammoth";
 import { extractResumeText, isReadableResumeText } from "@/lib/ai/resume";
 
+import { latexToPlainText } from "./latex-text";
+import { normalizeWrappedBullets } from "./scoring";
+export { latexToPlainText, normalizeWrappedBullets };
+
 export const MAX_ATS_FILE_BYTES = 3 * 1024 * 1024;
 export function validateFile(file: File, imagesOnly = false) {
   if (!file.size || file.size > MAX_ATS_FILE_BYTES) throw new Error("Choose a non-empty file under 3 MB.");
   const isImage = file.type.startsWith("image/") || /\.(png|jpe?g|webp|heic)$/i.test(file.name);
-  const isDoc = ["application/pdf", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(file.type) || /\.(pdf|docx|txt)$/i.test(file.name);
+  const isDoc = ["application/pdf", "text/plain", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/x-tex", "application/x-tex"].includes(file.type) || /\.(pdf|docx|txt|tex)$/i.test(file.name);
   if (imagesOnly && !isImage) throw new Error("Use a PNG, JPEG, WebP or camera photo job screenshot.");
-  if (!imagesOnly && !isImage && !isDoc) throw new Error("Use a PDF, DOCX, TXT, or photo/image resume.");
+  if (!imagesOnly && !isImage && !isDoc) throw new Error("Use a PDF, DOCX, TXT, TEX, or photo/image resume.");
 }
 async function transcribe(buffer: Buffer, mimeType: string) {
   if (!process.env.GEMINI_API_KEY) throw new Error("Configure GEMINI_API_KEY to transcribe images.");
@@ -40,20 +44,30 @@ async function transcribe(buffer: Buffer, mimeType: string) {
   if (text.length < 50) throw new Error(lastError ? `Transcription error: ${lastError.message}` : "Not enough readable text. Try a clearer image or paste the text.");
   return text;
 }
-export async function parseATSFile(file: File, imagesOnly = false): Promise<{ text: string; method: string }> {
+export async function parseATSFile(file: File, imagesOnly = false): Promise<{ text: string; method: string; rawLatex?: string }> {
   validateFile(file, imagesOnly);
   const buffer = Buffer.from(await file.arrayBuffer());
-  if (file.type.startsWith("image/")) return { text: await transcribe(buffer, file.type), method: "AI transcription — verify names, dates and numbers" };
+  if (file.type.startsWith("image/")) {
+    const raw = await transcribe(buffer, file.type);
+    return { text: normalizeWrappedBullets(raw), method: "AI transcription — verify names, dates and numbers" };
+  }
   if (file.type.includes("wordprocessingml")) {
     const result = await mammoth.extractRawText({ buffer });
     if (!isReadableResumeText(result.value)) throw new Error("No readable text in this DOCX.");
-    return { text: result.value.trim(), method: "DOCX text extraction" };
+    return { text: normalizeWrappedBullets(result.value.trim()), method: "DOCX text extraction" };
+  }
+  if (file.name.endsWith(".tex") || file.type === "text/x-tex" || file.type === "application/x-tex") {
+    const rawLatex = buffer.toString("utf-8");
+    const parsedText = latexToPlainText(rawLatex);
+    return { text: normalizeWrappedBullets(parsedText), method: "LaTeX .tex parsing", rawLatex };
   }
   try {
-    return { text: await extractResumeText(buffer, file.type), method: file.type === "application/pdf" ? "PDF text extraction" : "Plain text" };
+    const extracted = await extractResumeText(buffer, file.type);
+    return { text: normalizeWrappedBullets(extracted), method: file.type === "application/pdf" ? "PDF text extraction" : "Plain text" };
   } catch (error) {
     if (file.type === "application/pdf" && error instanceof Error && error.message.startsWith("No readable resume")) {
-      return { text: await transcribe(buffer, file.type), method: "AI transcription of scanned PDF — verify against the original" };
+      const raw = await transcribe(buffer, file.type);
+      return { text: normalizeWrappedBullets(raw), method: "AI transcription of scanned PDF — verify against the original" };
     }
     throw error;
   }

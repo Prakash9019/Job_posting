@@ -170,3 +170,57 @@ export async function assertFileAccess(
 
   throw new AuthError(400, `Invalid file category '${type}'. Allowed: 'screenshot', 'resume'.`);
 }
+
+/**
+ * Asserts that the specified extracted URL exists and belongs to the authenticated user.
+ */
+export async function assertUrlAccess(urlId: string, userId: string) {
+  const url = await prisma.extractedUrl.findUnique({
+    where: { id: urlId },
+    include: {
+      screenshot: {
+        include: {
+          batch: {
+            select: { userId: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!url) {
+    throw new AuthError(404, `URL '${urlId}' not found.`);
+  }
+
+  if (url.screenshot.batch.userId !== userId) {
+    throw new AuthError(
+      403,
+      `Forbidden: URL '${urlId}' belongs to another user. Cross-user access denied.`
+    );
+  }
+
+  return url;
+}
+
+/**
+ * Asserts that the specified send attempt exists and belongs to the authenticated user.
+ */
+export async function assertSendAttemptAccess(attemptId: string, userId: string) {
+  const attempt = await prisma.sendAttempt.findUnique({
+    where: { id: attemptId },
+  });
+
+  if (!attempt) {
+    throw new AuthError(404, `Send attempt '${attemptId}' not found.`);
+  }
+
+  if (attempt.userId !== userId) {
+    throw new AuthError(
+      403,
+      `Forbidden: Send attempt '${attemptId}' belongs to another user. Cross-user access denied.`
+    );
+  }
+
+  return attempt;
+}
+

@@ -4,6 +4,7 @@ import { getStorageProvider } from "@/lib/storage";
 import { extractFromScreenshot, generateApplicationEmail } from "@/lib/ai/gemini";
 import { ExtractionCategory } from "@/lib/validation/schemas";
 import { getReadableResumeText } from "@/lib/ai/resume";
+import { autoTailorResumeToJD, compileLatexToPdfBuffer } from "@/lib/ats/tailor";
 
 const MAX_RETRIES = parseInt(process.env.MAX_PROCESSING_RETRIES || "2", 10);
 const DEFAULT_CONCURRENCY = parseInt(process.env.PROCESSING_CONCURRENCY || "3", 10);
@@ -170,30 +171,86 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
           if (resumeText !== resume.extractedText) {
             await prisma.resume.update({ where: { id: resume.id }, data: { extractedText: resumeText } });
           }
+
+          const jobText = [
+            extraction.jobTitle,
+            extraction.companyName,
+            extraction.jobDescription,
+            extraction.requiredSkills ? `Required Skills: ${extraction.requiredSkills}` : "",
+          ].filter(Boolean).join("\n\n");
+
+          let sourceLatex: string | undefined;
+          if (resume.fileName.endsWith(".tex") || resume.mimeType.includes("tex")) {
+            const rawTexBuf = await storage.readFile(resume.filePath).catch(() => null);
+            if (rawTexBuf) sourceLatex = rawTexBuf.toString("utf-8");
+          }
+
+          let effectiveResumeId = resume.id;
+          let generationStatus = "GENERATED";
+          let effectiveResumeText = resumeText;
+
+          try {
+            const tailored = await autoTailorResumeToJD({
+              resumeText,
+              sourceLatex,
+              jobText: jobText || `${extraction.jobTitle || "Role"} at ${extraction.companyName || "Company"}`,
+              companyName: extraction.companyName || undefined,
+            });
+
+            effectiveResumeText = tailored.optimizedText;
+
+            // Compile tailored LaTeX to binary PDF Buffer
+            const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex);
+            if (compiledPdf && compiledPdf.length > 0) {
+              const tailoredStoragePath = `resumes/tailored-${screenshot.id}-${Date.now()}.pdf`;
+              await storage.saveFile(tailoredStoragePath, compiledPdf, "application/pdf");
+
+              const tailoredResumeRecord = await prisma.resume.create({
+                data: {
+                  userId: screenshot.batch.userId,
+                  fileName: tailored.attachmentFilename || "Resume.pdf",
+                  filePath: tailoredStoragePath,
+                  fileSize: compiledPdf.length,
+                  mimeType: "application/pdf",
+                  extractedText: tailored.optimizedText,
+                  isActive: false,
+                },
+              });
+              effectiveResumeId = tailoredResumeRecord.id;
+              generationStatus = `ATS Tailored: ${tailored.baselineScore} → ${tailored.finalScore}/100`;
+            } else {
+              generationStatus = `ATS Tailored: ${tailored.baselineScore} → ${tailored.finalScore}/100 (LaTeX Ready)`;
+            }
+          } catch (tailorErr) {
+            console.warn("ATS Tailoring encountered an issue, proceeding with active resume:", tailorErr);
+          }
+
           const generatedDraft = await generateApplicationEmail({
             jobDetails: extraction,
             screenshot: { content: imageBuffer, mimeType: screenshot.mimeType },
-            resumeText,
+            resumeText: effectiveResumeText,
             senderName: screenshot.batch.user.name || "Applicant",
             senderEmail: screenshot.batch.user.email || undefined,
           });
 
           const existingDraft = await prisma.emailDraft.findFirst({ where: { screenshotId: screenshot.id } });
-          if (!existingDraft) await prisma.emailDraft.create({
-            data: {
-              screenshotId: screenshot.id,
-              batchId: screenshot.batchId,
-              userId: screenshot.batch.userId,
-              resumeId: resume.id,
-              companyName: extraction.companyName || "Company",
-              jobTitle: extraction.jobTitle || "Job Opening",
-              recipientEmail: extraction.recipientEmail!.trim(),
-              subject: generatedDraft.subject,
-              body: generatedDraft.body,
-              generationStatus: "GENERATED",
-              reviewStatus: "NEEDS_REVIEW",
-            },
-          });
+          if (!existingDraft) {
+            await prisma.emailDraft.create({
+              data: {
+                screenshotId: screenshot.id,
+                batchId: screenshot.batchId,
+                userId: screenshot.batch.userId,
+                resumeId: effectiveResumeId,
+                companyName: extraction.companyName || "Company",
+                jobTitle: extraction.jobTitle || "Job Opening",
+                recipientEmail: extraction.recipientEmail!.trim(),
+                subject: generatedDraft.subject,
+                body: generatedDraft.body,
+                generationStatus,
+                reviewStatus: "NEEDS_REVIEW",
+              },
+            });
+          }
         } catch (emailGenErr) {
           console.error("Failed to generate personalized email:", emailGenErr);
           // Draft generation failed, note it in manual review reason

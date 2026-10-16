@@ -161,3 +161,79 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, error: errorMsg }, { status: 500 });
   }
 }
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const { userId } = requireUser(req);
+    const body = await req.json().catch(() => ({}));
+    const ids: string[] = Array.isArray(body?.ids)
+      ? body.ids
+      : req.nextUrl.searchParams.get("id")
+      ? [req.nextUrl.searchParams.get("id")!]
+      : [];
+
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { success: false, error: "No batch IDs provided for deletion" },
+        { status: 400 }
+      );
+    }
+
+    // 1. Fetch batches strictly owned by authenticated user
+    const batches = await prisma.batch.findMany({
+      where: {
+        id: { in: ids },
+        userId,
+      },
+      include: {
+        screenshots: {
+          select: {
+            filePath: true,
+          },
+        },
+      },
+    });
+
+    if (batches.length === 0) {
+      return NextResponse.json({
+        success: true,
+        message: "No matching batches found to delete",
+        count: 0,
+      });
+    }
+
+    const storage = getStorageProvider();
+
+    // 2. Permanently delete all associated screenshot files from storage
+    for (const batch of batches) {
+      for (const screenshot of batch.screenshots) {
+        try {
+          await storage.deleteFile(screenshot.filePath);
+        } catch (fileErr) {
+          console.warn(`Could not delete file ${screenshot.filePath}:`, fileErr);
+        }
+      }
+    }
+
+    // 3. Permanently hard-delete batches from database (cascades screenshots, results, urls, drafts)
+    const foundIds = batches.map((b) => b.id);
+    const result = await prisma.batch.deleteMany({
+      where: {
+        id: { in: foundIds },
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: `Permanently deleted ${result.count} batch${result.count === 1 ? "" : "es"} and associated files`,
+      count: result.count,
+    });
+  } catch (error: unknown) {
+    if (error instanceof AuthError) {
+      return NextResponse.json({ success: false, error: error.message }, { status: error.statusCode });
+    }
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ success: false, error: errorMsg }, { status: 500 });
+  }
+}
+
