@@ -223,7 +223,7 @@ export default function ResumeModal({
               type="file"
               ref={fileInputRef}
               onChange={handleFileUpload}
-              accept="application/pdf,text/plain"
+              accept="application/pdf,text/plain,.tex,application/x-tex,text/x-tex"
               className="hidden"
             />
             {isUploading ? (

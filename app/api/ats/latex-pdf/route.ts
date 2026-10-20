@@ -1,16 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCandidateFilename } from "@/lib/ats/tailor";
+import {
+  ensureAllHrefsPreservedInLatex,
+  extractHyperlinksFromLatex,
+  validatePdfHyperlinks,
+} from "@/lib/ats/hyperlinks";
 
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const latexCode = body?.latexCode;
+    const rawLatexCode = body?.latexCode;
 
-    if (!latexCode || typeof latexCode !== "string" || !latexCode.trim()) {
+    if (!rawLatexCode || typeof rawLatexCode !== "string" || !rawLatexCode.trim()) {
       return NextResponse.json({ error: "Missing or empty latexCode" }, { status: 400 });
     }
+
+    const linkSources = [body?.originalLatex, body?.resumeText, body?.markdownText].filter(Boolean) as string[];
+    const latexCode = ensureAllHrefsPreservedInLatex(rawLatexCode, linkSources);
 
     const downloadFilename =
       body?.filename ||
@@ -59,7 +67,27 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const pdfBuffer = await response.arrayBuffer();
+    const pdfArrayBuf = await response.arrayBuffer();
+    const pdfBuffer = Buffer.from(pdfArrayBuf);
+
+    // Validate compiled PDF hyperlink annotations if original template or expected links are known
+    let linkValidationHeader = "unverified";
+    if (body?.originalLatex) {
+      try {
+        const originalLinks = extractHyperlinksFromLatex(body.originalLatex);
+        if (originalLinks.length > 0) {
+          const val = await validatePdfHyperlinks(pdfBuffer, originalLinks.map((l) => l.url));
+          linkValidationHeader = `${val.foundUrls.length}/${originalLinks.length}`;
+          if (!val.valid) {
+            console.warn(`[PDF Hyperlink Warning] ${val.missingUrls.length} missing link annotations:`, val.missingUrls);
+          } else {
+            console.log(`[PDF Hyperlink Verified] All ${val.foundUrls.length} links are clickable in compiled PDF.`);
+          }
+        }
+      } catch (valErr) {
+        console.warn("Failed to validate PDF hyperlink annotations:", valErr);
+      }
+    }
 
     return new NextResponse(pdfBuffer, {
       status: 200,
@@ -67,6 +95,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${downloadFilename.replace(/["\r\n]/g, "")}"`,
         "Content-Length": String(pdfBuffer.byteLength),
+        "X-Hyperlinks-Validated": linkValidationHeader,
       },
     });
   } catch (err: unknown) {

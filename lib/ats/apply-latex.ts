@@ -1,6 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 import { generateATSLatex, cleanLingeringPlaceholders, getCandidateFilename, runAllRemediationPasses } from "./tailor";
 import { scoreResume, extractRequirementsFromJobText } from "./scoring";
+import {
+  extractHyperlinksFromLatex,
+  restoreMissingHyperlinksInLatex,
+  ensureAllHrefsPreservedInLatex,
+  validatePdfHyperlinks,
+} from "./hyperlinks";
 
 export interface ApplyLatexParams {
   originalLatex: string;
@@ -18,6 +24,12 @@ export interface ApplyLatexResult {
   error?: string;
   stats: string;
   delta?: number;
+  hyperlinks?: {
+    valid: boolean;
+    foundCount: number;
+    expectedCount: number;
+    report: string;
+  };
 }
 
 /**
@@ -35,7 +47,10 @@ export function cleanLatexMarkdownFences(text: string): string {
  * Validates and compiles LaTeX code via TeXLive CGI (pdflatex with xelatex fallback).
  * Returns compilation success flag, binary PDF buffer if successful, or compiler error log.
  */
-export async function validateAndCompileLatex(latexCode: string): Promise<{
+export async function validateAndCompileLatex(
+  latexCode: string,
+  linkSource?: string | ExtractedHyperlink[]
+): Promise<{
   success: boolean;
   pdfBuffer: Buffer | null;
   log?: string;
@@ -45,9 +60,12 @@ export async function validateAndCompileLatex(latexCode: string): Promise<{
     return { success: false, pdfBuffer: null, error: "Empty LaTeX code provided." };
   }
 
+  // Ensure 100% of hyperlinks are preserved as clickable \href commands before compiling
+  const safeLatex = ensureAllHrefsPreservedInLatex(latexCode, linkSource ? [linkSource] : []);
+
   async function compileWithEngine(engine: string) {
     const formData = new FormData();
-    formData.append("filecontents[]", latexCode);
+    formData.append("filecontents[]", safeLatex);
     formData.append("filename[]", "document.tex");
     formData.append("engine", engine);
     formData.append("return", "pdf");
@@ -111,6 +129,8 @@ export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): 
     baseLatex = generateATSLatex(params.atsOptimizedText);
   }
 
+  const originalLinks = extractHyperlinksFromLatex(baseLatex);
+
   // Pre-process suggestions from audit
   const auditSuggestions = {
     par_rewrites: params.audit?.action_verb_and_par_rewrites?.map((r: any) => ({
@@ -137,20 +157,38 @@ export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): 
     });
 
     const compileRes = await validateAndCompileLatex(deterministic.optimizedLatex);
+    let linkReport = "";
+    let hyperlinkValidation: any = undefined;
+    if (compileRes.success && compileRes.pdfBuffer && originalLinks.length > 0) {
+      hyperlinkValidation = await validatePdfHyperlinks(
+        compileRes.pdfBuffer,
+        originalLinks.map((l) => l.url)
+      );
+      linkReport = ` • ${hyperlinkValidation.foundUrls.length} Clickable Links Verified`;
+    }
+
     return {
       updatedLatex: deterministic.optimizedLatex,
       compiled: compileRes.success,
       pdfBase64: compileRes.pdfBuffer ? compileRes.pdfBuffer.toString("base64") : undefined,
       log: compileRes.log,
       error: compileRes.error,
-      stats: `✓ Deterministic Merge Applied: ${deterministic.passesSummary.rewrites} PAR Rewrites, ${deterministic.passesSummary.metricsAdded} Metrics Added`,
+      stats: `✓ Deterministic Merge Applied: ${deterministic.passesSummary.rewrites} PAR Rewrites, ${deterministic.passesSummary.metricsAdded} Metrics Added${linkReport}`,
+      hyperlinks: hyperlinkValidation
+        ? {
+            valid: hyperlinkValidation.valid,
+            foundCount: hyperlinkValidation.foundUrls.length,
+            expectedCount: originalLinks.length,
+            report: hyperlinkValidation.report,
+          }
+        : undefined,
     };
   }
 
   const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
   const modelName = process.env.GEMINI_ATS_MODEL || "gemini-2.5-pro";
 
-  const prompt = `You are a Principal LaTeX Typesetting Engineer and Executive Resume Strategist.
+  const prompt = `You are a Principal LaTeX Typesetting Engineer and Executive Resume Strategist operating as a senior recruiter in the candidate's target industry.
 Your task is to merge ATS-optimized content and AI suggestions into the user's existing LaTeX resume template.
 
 === 1. STRUCTURAL SOURCE OF TRUTH (ORIGINAL LATEX CODE) ===
@@ -174,29 +212,53 @@ ${params.jobText ? `=== 4. TARGET JOB DESCRIPTION ===\n"""\n${params.jobText.sli
 
 === CRITICAL RULES & INSTRUCTIONS (NON-NEGOTIABLE) ===
 
-1. PRESERVE THE ORIGINAL TEMPLATE ARCHITECTURE:
+1. PRESERVE ALL ORIGINAL HYPERLINKS & MACROS:
+   - YOU MUST PRESERVE EVERY valid \\href{URL}{LABEL} and \\url{URL} from the original LaTeX template.
+   - Do NOT replace linked text with plain text. GitHub, LinkedIn, email addresses (mailto:), portfolio, and project links (Code, Live Demo) MUST remain clickable \\href{URL}{label}.
+   - If project details change or new bullets are added, retain original URLs and update only the visible text.
+   - Ensure \\usepackage[hidelinks]{hyperref} or \\usepackage{hyperref} is loaded in the preamble.
    - YOU MUST REUSE the user's EXACT LaTeX preamble: \\documentclass, \\usepackage, custom colors, geometry, fonts, and custom macros (e.g. \\resumeSubheading, \\resumeItem, \\resumeProjectHeading, \\resumeSubItem, tabular layouts).
    - DO NOT replace or simplify the template with a generic layout. Preserve the template's visual styling, margins, and custom itemize environments.
-   - Maintain all hyperlinked \\href{URL}{LABEL} commands and contact links (Email, Phone, LinkedIn, GitHub, Portfolio).
 
 2. PRESERVE ALL HEADINGS, SECTIONS, AND PROJECTS:
    - YOU MUST PRESERVE EVERY SINGLE section heading present in the resume and template (e.g. \\section{PROFESSIONAL SUMMARY}, \\section{TECHNICAL SKILLS}, \\section{WORK EXPERIENCE}, \\section{PROJECTS}, \\section{EDUCATION}, \\section{ACHIEVEMENTS}, \\section{CERTIFICATIONS}).
    - DO NOT rename, remove, omit, or collapse sections.
    - DO NOT delete or merge distinct projects into one. Every project present in the resume MUST remain in the LaTeX with its bullet points intact, formatted using the template's project macro/environment.
 
-3. INJECT ATS CONTENT & SUGGESTIONS:
-   - Seamlessly update corresponding bullet points with the improved PAR wording, strong active verbs, and quantified metrics from the ATS resume and JSON suggestions.
+3. INJECT ATS CONTENT & SUGGESTIONS (STRICT SOURCE-GROUNDING & JD MIRRORING):
+   - Seamlessly update corresponding bullet points with improved PAR phrasing, strong action verbs, and concise technical achievements from the ATS resume and JSON suggestions to pass ATS filters.
+   - When a target Job Description is provided, mirror the language, technical vocabulary, and keywords in the job description without lying or inventing experience.
    - Apply all grammar, spelling, and phrasing improvements.
-   - Replace ANY placeholder brackets like [Y]%, [X]%, [N], [$X], [METRIC] with concrete metrics (e.g. 42\\%, \\$45K, 2.5x, 10K+).
-   - If missing JD skills were identified, weave them naturally into the Technical Skills section matching the template's layout.
+   - STRICT SOURCE GROUNDING (MANDATORY POLICY):
+     * The AI does not invent experience; it highlights the impact the candidate has already made.
+     * NEVER invent employers, job titles, dates, technologies, frameworks, certifications, or metrics.
+     * Treat the candidate's original resume as the source of truth. Retain numerical achievements ONLY when supported by the original resume or verified user inputs.
+     * NEVER fabricate arbitrary percentages, latencies, or dollar amounts.
+     * If a bullet contains placeholder brackets like [X]%, [Y]%, [N], [$X], or [METRIC] and no verified number is provided in the input, cleanly remove the bracket placeholder and rephrase smoothly without inventing numbers or percentages.
+     * DO NOT weave missing JD skills into the Technical Skills section or experience bullets. Missing JD skills from the audit are diagnostic recommendations for the candidate, NEVER claimed candidate skills.
+     * DO NOT add generic filler phrases such as "leveraging Java for scalable execution" or arbitrary impact clauses.
+     * Keep project-specific technology associations intact; do not assume a technology used in one project was used in another.
 
-4. LATEX SYNTAX, COMPILATION & CLEANLINESS:
+4. TEXT WRAPPING & NO MID-SENTENCE BREAKS:
+   - DO NOT insert manual line breaks (\\\\ or \\newline) in the middle of sentences or bullet points.
+   - Preserve each bullet point as one logical paragraph (\\resumeItem{...} or \\item ...) and let LaTeX wrap text naturally.
+   - Keep continuation lines aligned with the bullet text without artificial line splits or malformed hyphenation.
+   - NEVER output math mode pipes such as $|$ or \\$|\\$. Always use \\enspace\\textbar\\enspace or the template's divider macro.
+
+5. ADAPTIVE PAGINATION & READABLE TYPOGRAPHY:
+   - Do NOT force every resume onto a single page. Implement adaptive pagination based on the candidate's actual content.
+   - If the candidate's content naturally fits on 1 page without shrinking fonts or clipping content, use a clean 1-page layout.
+   - If the candidate has extensive experience/projects (e.g. 2 pages), format cleanly across 2 pages with standard typography (10pt), balanced section breaks, and comfortable margins (0.4in to 0.5in).
+   - NEVER drop, delete, or truncate projects or bullets just to meet a 1-page target.
+   - Prevent orphan headings (always keep headings attached to their initial content) and do not break subproject headers away from their bullet points.
+
+6. LATEX SYNTAX, COMPILATION & CLEANLINESS:
    - Properly escape LaTeX special characters in content: % -> \\%, & -> \\&, $ -> \\$, _ -> \\_, # -> \\#.
    - Ensure all environments (\\begin{...} ... \\end{...}) and braces ({...}) are strictly balanced and syntactically valid.
    - Ensure \\pagestyle{empty} and \\thispagestyle{empty} are present so no page numbers appear.
    - Strip any pagination artifacts (e.g. "-- 1 of 2 --", "Page 1 of 2").
 
-5. OUTPUT SPECIFICATION:
+7. OUTPUT SPECIFICATION:
    - Return ONLY the final, compilable LaTeX code.
    - Do NOT include any markdown code fences (no \`\`\`latex or \`\`\`), and NO conversational commentary.
    - Start directly with \\documentclass and end with \\end{document}.
@@ -247,6 +309,8 @@ ${params.jobText ? `=== 4. TARGET JOB DESCRIPTION ===\n"""\n${params.jobText.sli
 
   // Post-process placeholders and page numbering
   updatedLatex = cleanLingeringPlaceholders(updatedLatex, true);
+  updatedLatex = updatedLatex.replace(/(?:\\\$[ \t]*[|][ \t]*\\\$|\\\$[ \t]*\\\|[ \t]*\\\$|\$[ \t]*\|[ \t]*\$)/g, "\\enspace\\textbar\\enspace");
+  updatedLatex = updatedLatex.replace(/\\\\+(\s*\\(?:end\{itemize\}|end\{tabular\*?\}|section))/g, "$1");
   if (!updatedLatex.includes("pagestyle{empty}") && updatedLatex.includes("\\begin{document}")) {
     updatedLatex = updatedLatex.replace(
       "\\begin{document}",
@@ -254,8 +318,11 @@ ${params.jobText ? `=== 4. TARGET JOB DESCRIPTION ===\n"""\n${params.jobText.sli
     );
   }
 
+  // Restore and reconcile original hyperlinks into updated LaTeX
+  updatedLatex = ensureAllHrefsPreservedInLatex(updatedLatex, [baseLatex, params.atsOptimizedText]);
+
   // Compile and validate with TeXLive CGI
-  let compileResult = await validateAndCompileLatex(updatedLatex);
+  let compileResult = await validateAndCompileLatex(updatedLatex, [baseLatex, params.atsOptimizedText]);
 
   // Self-repair pass if compilation had syntax errors
   if (!compileResult.success && compileResult.log && apiKey) {
@@ -270,7 +337,7 @@ ${updatedLatex}
 
 TASK:
 Fix the syntax error, missing package, or unescaped character causing the failure.
-Preserve all content, headings, sections, and macros.
+Preserve all content, headings, sections, macros, and \\href hyperlinks.
 Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
 
       const healingResponse = await ai.models.generateContent({
@@ -278,8 +345,9 @@ Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
         contents: healingPrompt,
       });
 
-      const healedLatex = cleanLatexMarkdownFences(healingResponse.text || "");
+      let healedLatex = cleanLatexMarkdownFences(healingResponse.text || "");
       if (healedLatex && healedLatex.includes("\\begin{document}")) {
+        healedLatex = restoreMissingHyperlinksInLatex(healedLatex, baseLatex);
         const healedCompileResult = await validateAndCompileLatex(healedLatex);
         if (healedCompileResult.success) {
           console.log("Self-healing pass succeeded! LaTeX compiled cleanly to PDF.");
@@ -295,8 +363,18 @@ Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
   const sectionCount = (updatedLatex.match(/\\section\*?\{/g) || []).length;
   const hrefCount = (updatedLatex.match(/\\href\{/g) || []).length;
 
+  let linkReport = "";
+  let hyperlinkValidation: any = undefined;
+  if (compileResult.success && compileResult.pdfBuffer && originalLinks.length > 0) {
+    hyperlinkValidation = await validatePdfHyperlinks(
+      compileResult.pdfBuffer,
+      originalLinks.map((l) => l.url)
+    );
+    linkReport = ` • ${hyperlinkValidation.foundUrls.length} Clickable Links Verified`;
+  }
+
   const stats = compileResult.success
-    ? `✨ AI-Integrated LaTeX Verified: ${sectionCount} Sections Preserved • ${hrefCount} \\href Links • TeXLive Verified (${compileResult.pdfBuffer?.byteLength ? `${Math.round(compileResult.pdfBuffer.byteLength / 1024)} KB PDF` : "Clean Build"})`
+    ? `✨ AI-Integrated LaTeX Verified: ${sectionCount} Sections Preserved • ${hrefCount} \\href Links${linkReport} • TeXLive Verified (${compileResult.pdfBuffer?.byteLength ? `${Math.round(compileResult.pdfBuffer.byteLength / 1024)} KB PDF` : "Clean Build"})`
     : `⚠️ AI-Integrated LaTeX: ${sectionCount} Sections Preserved • ${hrefCount} \\href Links • TeXLive Warning: ${compileResult.error || "Review syntax"}`;
 
   return {
@@ -306,5 +384,13 @@ Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
     log: compileResult.log,
     error: compileResult.error,
     stats,
+    hyperlinks: hyperlinkValidation
+      ? {
+          valid: hyperlinkValidation.valid,
+          foundCount: hyperlinkValidation.foundUrls.length,
+          expectedCount: originalLinks.length,
+          report: hyperlinkValidation.report,
+        }
+      : undefined,
   };
 }

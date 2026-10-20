@@ -75,15 +75,52 @@ export function latexToPlainText(latex: string): string {
   // so nested \textbf{...} or \href{...}{...} never truncate the bullet!
   body = extractBalancedBraces(body, ["resumeItem", "resumeSubItem"]);
 
+  // Convert \href{url}{label} to [label](url) using balanced brace extraction
+  const hrefPattern = /\\href\s*\{/g;
+  let hrefMatch: RegExpExecArray | null;
+  let hrefTransformed = "";
+  let lastHrefIdx = 0;
+
+  while ((hrefMatch = hrefPattern.exec(body)) !== null) {
+    const urlOpen = hrefMatch.index + hrefMatch[0].length - 1;
+    const urlParsed = parseBalancedBraces(body, urlOpen);
+    if (!urlParsed) continue;
+
+    const after = body.slice(urlParsed.endIndex);
+    const labelOpenMatch = after.match(/^\s*\{/);
+    if (!labelOpenMatch) continue;
+
+    const labelOpen = urlParsed.endIndex + (labelOpenMatch.index || 0) + labelOpenMatch[0].length - 1;
+    const labelParsed = parseBalancedBraces(body, labelOpen);
+    if (!labelParsed) continue;
+
+    const url = urlParsed.content.trim();
+    const cleanLabel = labelParsed.content
+      .replace(/\\(?:underline|textbf|textit|emph|textsc)\{([^}]*)\}/g, "$1")
+      .trim();
+
+    hrefTransformed += body.slice(lastHrefIdx, hrefMatch.index);
+    hrefTransformed += `[${cleanLabel || url}](${url})`;
+
+    lastHrefIdx = labelParsed.endIndex;
+    hrefPattern.lastIndex = labelParsed.endIndex;
+  }
+  hrefTransformed += body.slice(lastHrefIdx);
+  body = hrefTransformed;
+
   return body
-    // Convert \href{url}{label} to label (url)
-    .replace(/\\href\{([^}]+)\}\{([^}]+)\}/g, "$2 ($1)")
-    // Convert \url{url} to url
-    .replace(/\\url\{([^}]+)\}/g, "$1")
+    // Convert \url{url} to [url](url)
+    .replace(/\\url\{([^}]+)\}/g, "[$1]($1)")
     // Convert \section*{...} or \section{...} to \n... \n
     .replace(/\\(?:sub)*section\*?\{([^}]+)\}/gi, "\n\n$1\n")
     // Convert \resumeSubheading or similar macro headings if present
     .replace(/\\resumeSubheading\s*\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}\{([^}]+)\}/g, "\n$1 | $2\n$3 | $4\n")
+    // Convert \resumeProjectHeading if present
+    .replace(/\\resumeProjectHeading\s*\{([^}]+)\}\{([^}]+)\}/g, "\n$1 | $2\n")
+    // Normalize dividers
+    .replace(/\\(?:resumeDivider|enspace\\textbar\\enspace|textbar)/g, " | ")
+    .replace(/\$?\s*\|\s*\$?/g, " | ")
+    .replace(/\\hfill\s*/g, " | ")
     // Convert standard \item to bullet •
     .replace(/\\item\s+/g, "\n• ")
     // Un-escape common LaTeX escapes

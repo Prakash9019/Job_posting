@@ -18,13 +18,14 @@ export interface CommercialPlatformScore {
 }
 
 const headings: [string, RegExp][] = [
-  ["skills", /^(technical |core |key |professional )?(skills|technologies|competencies|skill set)\s*:?$/i],
-  ["experience", /^(work |professional |relevant |employment )?(experience|employment|work history)\s*:?$/i],
-  ["projects", /^(personal |selected |technical |academic )?projects\s*:?$/i],
-  ["education", /^(education|academic background|qualifications)\s*:?$/i],
-  ["summary", /^(professional |career )?(summary|profile|objective|executive summary)\s*:?$/i],
-  ["certifications", /^(certifications?|licenses|certificates)\s*:?$/i],
-  ["other", /^(awards|publications|interests|languages)\s*:?$/i],
+  ["skills", /^(?:#{1,3}\s*)?(?:technical |core |key |professional )?(?:skills|technologies|competencies|skill set|proficiencies|tools|areas of expertise)\s*:?$/i],
+  ["experience", /^(?:#{1,3}\s*)?(?:work |professional |relevant |employment |career )?(?:experience|employment|work history|internships)\s*:?$/i],
+  ["projects", /^(?:#{1,3}\s*)?(?:personal |selected |technical |academic |key |featured |notable )?projects(?:\s+experience)?\s*:?$/i],
+  ["education", /^(?:#{1,3}\s*)?(?:education|academic background|qualifications|academics|degrees)\s*:?$/i],
+  ["summary", /^(?:#{1,3}\s*)?(?:professional |career |executive )?(?:summary|profile|objective|overview|about me)\s*:?$/i],
+  ["certifications", /^(?:#{1,3}\s*)?(?:certifications?|licenses|certificates|credentials)(?:\s*&.*)?\s*:?$/i],
+  ["achievements", /^(?:#{1,3}\s*)?(?:achievements|key achievements|honors & awards|awards & honors|awards|honors|extracurricular activities|activities|leadership(?:\s*&.*)?|publications|patents)\s*:?$/i],
+  ["other", /^(?:#{1,3}\s*)?(?:awards|publications|interests|languages)\s*:?$/i],
 ];
 
 const aliases = [
@@ -117,67 +118,203 @@ export function cleanSmartTypography(text: string): string {
 }
 
 /**
- * Merges multi-line PDF/DOCX wrapped bullets inside experience and projects sections into
- * complete, unbroken lines so no sentences or metrics are lost on wrapped lines.
+ * Merges multi-line PDF/DOCX wrapped bullets and narrative paragraphs across all sections
+ * into complete, unbroken lines so no sentences or metrics are lost on wrapped lines,
+ * removing page boundary splits and fixing word hyphenation.
  */
 export function normalizeWrappedBullets(rawText: string): string {
   if (!rawText) return "";
-  const lines = rawText.replace(/\r\n?/g, "\n").split("\n");
+
+  // 1. Clean smart quotes, dashes, and malformed dollar-pipe sequences
+  const cleaned = rawText
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u2014\u2013]/g, "-")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\$?\s*\|\s*\$?|(?<=\s)\|\s*(?=\s)/g, " | ");
+
+  const rawLines = cleaned.split("\n");
+
+  // 2. Filter out page numbers, pagination footers, and PDF extraction artifacts
+  const cleanLines = rawLines.filter((l) => {
+    const trimmed = l.trim();
+    if (!trimmed) return true;
+    if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(trimmed)) return false;
+    if (/^(?:page\s*)?\d+\s*(?:of|\/)\s*\d+$/i.test(trimmed)) return false;
+    if (/^page\s*\d+$/i.test(trimmed)) return false;
+    if (/^\s*[-–—*]?\s*\d+\s*[-–—*]?\s*$/.test(trimmed)) return false;
+    if (/^(?:curriculum vitae|resume)$/i.test(trimmed)) return false;
+    if (/^[ƒ§ï\u2022\u2217\u25cf\u25cb\u25aa\u25ab\u25e6\u2023\u25b8\u25b9\u27a4\u27a7\u2794\u279c\s]+$/.test(trimmed)) return false;
+    return true;
+  });
+
   const BULLET_START_RE = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+]|\d+[.)])\s+/;
-  const SUBHEADER_RE = /\b(?:20\d\d|19\d\d|present|current)\b|\|/i;
+  const DATE_RE = /\b(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4})\s*[-–—]\s*(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4}|Present|Current)\b/i;
+  const ROLE_RE = /\b(?:software|engineer|developer|intern|scientist|analyst|lead|manager|consultant|associate|architect|researcher|director|founder|co-founder|officer|specialist|assistant)\b/i;
+  const LOCATION_RE = /\b(?:remote|hybrid|bangalore|bengaluru|hyderabad|visakhapatnam|mumbai|pune|delhi|mysuru|karnataka|india|usa|ca|ny)\b/i;
 
-  let currentSection = "contact";
+  function isRoleOrOrgHeader(line: string, nextLine = ""): boolean {
+    if (!line) return false;
+    const t = line.trim();
+    // A role or org header must never start with lowercase or bullet symbol
+    if (/^[a-z]/.test(t) || BULLET_START_RE.test(t)) return false;
+    // If the line ends with a comma, semicolon, open parenthesis, or trailing conjunction/preposition, it's a clause
+    if (/[,;:\-–—\(\[\{]|(?:\band|\bor|\bto|\bfor|\bwith|\bby|\bin|\bat|\bon|\busing|\bwhich|\bthat)\s*$/i.test(t)) return false;
+    if (DATE_RE.test(t)) return true;
+    if (t.includes("|") && t.length < 90) return true;
+    if (ROLE_RE.test(t) && (LOCATION_RE.test(t) || (t.length < 50 && !/[.!?]$/.test(t) && /^[A-Z]/.test(t)))) return true;
+    // nextLine check: only if t itself looks like a company or title name (not a sentence/verb phrase)
+    if (nextLine && DATE_RE.test(nextLine.trim())) {
+      if (t.length < 60 && !/[.!?]$/.test(t) && !/\b(?:targeting|processing|using|supporting|reducing|improving|developed|engineered|built|designed|created|architected|spearheaded|orchestrated)\b/i.test(t)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function joinLines(prev: string, next: string): string {
+    const pTrim = prev.trimEnd();
+    const nTrim = next.trim();
+    if (pTrim.endsWith("-") && !pTrim.endsWith(" -")) {
+      const beforeHyphen = pTrim.slice(0, -1);
+      const lastWordMatch = beforeHyphen.match(/([a-zA-Z]+)$/);
+      const nextWordMatch = nTrim.match(/^([a-zA-Z]+)/);
+      if (lastWordMatch && nextWordMatch) {
+        const lastWord = lastWordMatch[1];
+        const nextWord = nextWordMatch[1];
+        // If nextWord starts with uppercase, or lastWord is known compound prefix (Scikit, Multi, Pre, etc.)
+        if (/^[A-Z]/.test(nextWord) || /^(?:scikit|multi|cross|inter|non|pre|post|co|sub|graphrag|low|high)$/i.test(lastWord)) {
+          return beforeHyphen + "-" + nTrim;
+        }
+        // If it's a broken single word like applica-tions or classi-fication or opti-mizing
+        return beforeHyphen + nTrim;
+      }
+      return beforeHyphen + "-" + nTrim;
+    }
+    return pTrim + " " + nTrim;
+  }
+
   const result: string[] = [];
+  let currentSection = "contact";
 
-  for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i];
+  for (let i = 0; i < cleanLines.length; i++) {
+    const rawLine = cleanLines[i];
     const trimmed = rawLine.trim();
+    if (!trimmed) continue;
 
     const headingMatch = headings.find(([, regex]) => regex.test(trimmed));
     if (headingMatch) {
       currentSection = headingMatch[0];
-      result.push(rawLine);
+      result.push(trimmed);
       continue;
     }
 
-    const inBulletSection = ["experience", "projects"].includes(currentSection);
+    if (BULLET_START_RE.test(trimmed)) {
+      let mergedBullet = trimmed;
+      while (i + 1 < cleanLines.length) {
+        let lookAheadIdx = i + 1;
+        while (lookAheadIdx < cleanLines.length && !cleanLines[lookAheadIdx].trim()) {
+          lookAheadIdx++;
+        }
+        if (lookAheadIdx >= cleanLines.length) break;
 
-    if (inBulletSection && BULLET_START_RE.test(rawLine)) {
-      let mergedBullet = rawLine;
+        const nextTrimmed = cleanLines[lookAheadIdx].trim();
+        const hadEmpty = lookAheadIdx > i + 1;
 
-      while (i + 1 < lines.length) {
-        const nextRaw = lines[i + 1];
-        const nextTrimmed = nextRaw.trim();
+        if (headings.some(([, regex]) => regex.test(nextTrimmed))) break;
+        if (BULLET_START_RE.test(nextTrimmed)) break;
+        if (/^[-–—]\s+[A-Z]/.test(nextTrimmed)) break;
+        const afterLine = lookAheadIdx + 1 < cleanLines.length ? cleanLines[lookAheadIdx + 1] : "";
+        if (isRoleOrOrgHeader(nextTrimmed, afterLine)) break;
+        if (/^[A-Za-z0-9/& -]{2,25}:\s+/.test(nextTrimmed) && !nextTrimmed.includes(",")) break;
 
-        if (!nextTrimmed) break;
+        const endsWithPunctuation = /[.!?]$/.test(mergedBullet.trim());
+        const endsWithOpenClause = /[,;:\-–—\(\[\{]|(?:\band|\bor|\bto|\bfor|\bwith|\bby|\bin|\bat|\bon|\busing|\bwhich|\bthat)\s*$/i.test(mergedBullet.trim());
+        const nextStartsLower = /^[a-z]/.test(nextTrimmed);
+        const nextIsContinuation = nextStartsLower || /^(?:and|or|to|for|with|by|in|at|on|using|which|that|reducing|improving|resulting|saving|increasing|scaling|delivering|achieving)\b/i.test(nextTrimmed);
 
-        const nextIsHeading = headings.some(([, regex]) => regex.test(nextTrimmed));
-        if (nextIsHeading) break;
-
-        if (BULLET_START_RE.test(nextRaw)) break;
-
-        if (SUBHEADER_RE.test(nextTrimmed)) break;
-
-        const startsWithLower = /^[a-z]/.test(nextTrimmed);
-        const prevEndsWithoutPunctuation = !/[.!?]$/.test(mergedBullet.trim());
-        const isContinuingPhrase = /^(?:and|or|to|for|with|by|in|at|on|using|which|that|reducing|improving|resulting|saving|increasing|scaling|delivering|achieving|across|over|from|into|through|via|\d+(?:\.\d+)?%|\$\d+)\b/i.test(nextTrimmed);
-
-        if (startsWithLower || prevEndsWithoutPunctuation || isContinuingPhrase) {
-          if (mergedBullet.trimEnd().endsWith("-") && !mergedBullet.trimEnd().endsWith(" -")) {
-            mergedBullet = mergedBullet.trimEnd().slice(0, -1) + nextTrimmed;
-          } else {
-            mergedBullet = mergedBullet.trimEnd() + " " + nextTrimmed;
-          }
-          i++;
-        } else {
+        if (endsWithPunctuation && !nextIsContinuation) {
           break;
         }
-      }
 
+        if (hadEmpty && !nextIsContinuation) {
+          break;
+        }
+
+        mergedBullet = joinLines(mergedBullet, nextTrimmed);
+        i = lookAheadIdx;
+      }
       result.push(mergedBullet);
-    } else {
-      result.push(rawLine);
+      continue;
     }
+
+    // Merge multi-line paragraphs in narrative sections (summary / profile / objective / overview)
+    if (currentSection === "summary") {
+      let mergedPara = trimmed;
+      while (i + 1 < cleanLines.length) {
+        let lookAheadIdx = i + 1;
+        while (lookAheadIdx < cleanLines.length && !cleanLines[lookAheadIdx].trim()) {
+          lookAheadIdx++;
+        }
+        if (lookAheadIdx >= cleanLines.length) break;
+
+        const nextTrimmed = cleanLines[lookAheadIdx].trim();
+        if (headings.some(([, regex]) => regex.test(nextTrimmed))) break;
+        if (BULLET_START_RE.test(nextTrimmed)) break;
+        const afterLine = lookAheadIdx + 1 < cleanLines.length ? cleanLines[lookAheadIdx + 1] : "";
+        if (isRoleOrOrgHeader(nextTrimmed, afterLine)) break;
+
+        mergedPara = joinLines(mergedPara, nextTrimmed);
+        i = lookAheadIdx;
+      }
+      result.push(mergedPara);
+      continue;
+    }
+
+    // Merge wrapped lines in skills section (Category: Item 1, Item 2...)
+    if (currentSection === "skills") {
+      let mergedSkill = trimmed;
+      while (i + 1 < cleanLines.length) {
+        let lookAheadIdx = i + 1;
+        while (lookAheadIdx < cleanLines.length && !cleanLines[lookAheadIdx].trim()) {
+          lookAheadIdx++;
+        }
+        if (lookAheadIdx >= cleanLines.length) break;
+
+        const nextTrimmed = cleanLines[lookAheadIdx].trim();
+        if (headings.some(([, regex]) => regex.test(nextTrimmed))) break;
+        if (BULLET_START_RE.test(nextTrimmed)) break;
+        if (/^[A-Za-z0-9/& -]{2,30}:\s+/.test(nextTrimmed)) break;
+
+        mergedSkill = joinLines(mergedSkill, nextTrimmed);
+        i = lookAheadIdx;
+      }
+      result.push(mergedSkill);
+      continue;
+    }
+
+    // Merge wrapped lines in certifications section
+    if (currentSection === "certifications" && !BULLET_START_RE.test(trimmed)) {
+      let mergedCert = trimmed;
+      while (i + 1 < cleanLines.length) {
+        let lookAheadIdx = i + 1;
+        while (lookAheadIdx < cleanLines.length && !cleanLines[lookAheadIdx].trim()) {
+          lookAheadIdx++;
+        }
+        if (lookAheadIdx >= cleanLines.length) break;
+
+        const nextTrimmed = cleanLines[lookAheadIdx].trim();
+        if (headings.some(([, regex]) => regex.test(nextTrimmed))) break;
+        if (BULLET_START_RE.test(nextTrimmed)) break;
+
+        mergedCert = joinLines(mergedCert, nextTrimmed);
+        i = lookAheadIdx;
+      }
+      result.push(mergedCert);
+      continue;
+    }
+
+    result.push(trimmed);
   }
 
   return result.join("\n");

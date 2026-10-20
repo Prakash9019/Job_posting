@@ -1,6 +1,17 @@
-import { scoreResume, extractRequirementsFromJobText, cleanSmartTypography, METRIC_RE, resumeLines, containsSkill } from "./scoring";
+import { scoreResume, extractRequirementsFromJobText, cleanSmartTypography, METRIC_RE, resumeLines, containsSkill, normalizeWrappedBullets } from "./scoring";
 import { analyzeResume, UnifiedATSAudit } from "./analysis";
 import { parseBalancedBraces } from "./latex-text";
+import {
+  formatLatexWithHyperlinks,
+  restoreMissingHyperlinksInLatex,
+  ensureAllHrefsPreservedInLatex,
+  extractHyperlinksFromLatex,
+  extractHyperlinksFromMarkdownText,
+  ExtractedHyperlink,
+  markdownLinkToLatexHref,
+  transformPlainTextPreservingHrefs,
+  normalizeUrl,
+} from "./hyperlinks";
 
 export function escapeLatex(str: string): string {
   return str
@@ -11,7 +22,8 @@ export function escapeLatex(str: string): string {
 }
 
 export function escapeLatexForPatch(plainText: string): string {
-  return plainText
+  const clean = plainText.replace(/\\?\$[ \t]*\|[ \t]*\\?\$/g, " | ");
+  return clean
     .replace(/(?<!\\)%/g, "\\%")
     .replace(/(?<!\\)&/g, "\\&")
     .replace(/(?<!\\)\$/g, "\\$")
@@ -35,51 +47,58 @@ export function stripLatexFormatting(latexSnippet: string): string {
     .trim();
 }
 
-export function formatLatexLine(line: string): string {
-  let res = escapeLatex(line);
-  // Replace escaped email with href
-  res = res.replace(/([\w.+-]+@[\w.-]+\.[a-zA-Z]{2,})/g, "\\href{mailto:$1}{\\underline{$1}}");
-  // Replace LinkedIn
-  res = res.replace(/(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_-]+)/gi, "\\href{https://linkedin.com/in/$1}{\\underline{LinkedIn}}");
-  // Replace GitHub
-  res = res.replace(/(?:https?:\/\/)?(?:www\.)?github\.com\/([a-zA-Z0-9_-]+)/gi, "\\href{https://github.com/$1}{\\underline{GitHub}}");
-  return res;
+export function formatLatexLine(line: string, knownLinks?: ExtractedHyperlink[]): string {
+  return formatLatexWithHyperlinks(line, knownLinks);
 }
+
+const CANONICAL_HEADINGS: [string, RegExp][] = [
+  ["PROFESSIONAL SUMMARY", /^(?:#{1,3}\s*)?(?:professional |career |executive )?(?:summary|profile|objective|overview|about me)\s*:?$/i],
+  ["TECHNICAL SKILLS", /^(?:#{1,3}\s*)?(?:technical |core |key |professional )?(?:skills|technologies|competencies|skill set|proficiencies|tools|areas of expertise)\s*:?$/i],
+  ["WORK EXPERIENCE", /^(?:#{1,3}\s*)?(?:work |professional |relevant |employment |career )?(?:experience|employment|work history|internships)\s*:?$/i],
+  ["PROJECTS", /^(?:#{1,3}\s*)?(?:personal |selected |technical |academic |key |featured |notable )?projects(?:\s+experience)?\s*:?$/i],
+  ["EDUCATION", /^(?:#{1,3}\s*)?(?:education|academic background|qualifications|academics|degrees)\s*:?$/i],
+  ["CERTIFICATIONS", /^(?:#{1,3}\s*)?(?:certifications?|licenses|certificates|credentials)(?:\s*&.*)?\s*:?$/i],
+  ["ACHIEVEMENTS", /^(?:#{1,3}\s*)?(?:achievements|key achievements|honors & awards|awards & honors|awards|honors|extracurricular activities|activities|leadership(?:\s*&.*)?|publications|patents)\s*:?$/i],
+];
 
 /**
  * Generates clean, robust ATS-compliant LaTeX preserving 100% of non-empty lines from the resume.
- * Works seamlessly for 1-page and multi-page/2-page resumes without dropping projects or text.
+ * Uses adaptive pagination (article 10pt standard typography, comfortable margins) to format short resumes
+ * cleanly onto 1 page and multi-page resumes cleanly onto 2+ pages without dropping text, projects, or sections.
  */
-export function generateATSLatex(optimizedText: string): string {
-  const rawLines = optimizedText.replace(/\r\n?/g, "\n").split("\n");
+export function generateATSLatex(
+  optimizedText: string,
+  options?: { originalLatex?: string; knownLinks?: ExtractedHyperlink[] }
+): string {
+  const originalLinks = options?.originalLatex ? extractHyperlinksFromLatex(options.originalLatex) : [];
+  const mdLinks = extractHyperlinksFromMarkdownText(optimizedText);
+  const rawLinks = [...originalLinks, ...(options?.knownLinks || []), ...mdLinks];
+  const allKnownLinks: ExtractedHyperlink[] = [];
+  const seenNormLinks = new Set<string>();
+  for (const l of rawLinks) {
+    if (!l || !l.url) continue;
+    const norm = normalizeUrl(l.url);
+    if (!seenNormLinks.has(norm)) {
+      seenNormLinks.add(norm);
+      allKnownLinks.push(l);
+    }
+  }
+  const normalized = normalizeWrappedBullets(optimizedText);
+  const rawLines = normalized.split("\n");
 
-  // Filter out unwanted page numbers, pagination footers, and PDF extraction artifacts
   const cleanLines = rawLines.filter((l) => {
     const trimmed = l.trim();
-    if (!trimmed) return true;
-    // Filter page number lines e.g. "-- 1 of 2 --", "Page 1 of 2", "1 of 2", "Page 1"
+    if (!trimmed) return false;
     if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(trimmed)) return false;
     if (/^(?:page\s*)?\d+\s*(?:of|\/)\s*\d+$/i.test(trimmed)) return false;
     if (/^page\s*\d+$/i.test(trimmed)) return false;
-    if (/^\s*[-–—*]?\s*\d+\s*[-–—*]?\s*$/.test(trimmed)) return false; // lone numbers
+    if (/^\s*[-–—*]?\s*\d+\s*[-–—*]?\s*$/.test(trimmed)) return false;
     if (/^(?:curriculum vitae|resume)$/i.test(trimmed)) return false;
     if (/^[ƒ§ï\u2022\u2217\u25cf\u25cb\u25aa\u25ab\u25e6\u2023\u25b8\u25b9\u27a4\u27a7\u2794\u279c\s]+$/.test(trimmed)) return false;
     return true;
   });
 
-  // Comprehensive section heading matcher supporting standard titles, Markdown headers, and custom titles
-  const CANONICAL_HEADINGS: [string, RegExp][] = [
-    ["PROFESSIONAL SUMMARY", /^(?:#{1,3}\s*)?(?:professional |career |executive )?(?:summary|profile|objective|overview|about me)\s*:?$/i],
-    ["TECHNICAL SKILLS", /^(?:#{1,3}\s*)?(?:technical |core |key |professional )?(?:skills|technologies|competencies|skill set|proficiencies|tools|areas of expertise)\s*:?$/i],
-    ["WORK EXPERIENCE", /^(?:#{1,3}\s*)?(?:work |professional |relevant |employment |career )?(?:experience|employment|work history|internships)\s*:?$/i],
-    ["PROJECTS", /^(?:#{1,3}\s*)?(?:personal |selected |technical |academic |key |featured |notable )?projects(?:\s+experience)?\s*:?$/i],
-    ["EDUCATION", /^(?:#{1,3}\s*)?(?:education|academic background|qualifications|academics|degrees)\s*:?$/i],
-    ["CERTIFICATIONS", /^(?:#{1,3}\s*)?(?:certifications?|licenses|certificates|credentials)(?:\s*&.*)?\s*:?$/i],
-    ["ACHIEVEMENTS", /^(?:#{1,3}\s*)?(?:achievements|key achievements|honors & awards|awards & honors|awards|honors|extracurricular activities|activities|leadership(?:\s*&.*)?|publications|patents)\s*:?$/i],
-  ];
-
   const bulletRe = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+]|\d+[.)])\s+(.*)$/i;
-  // Date range matcher that captures full date range without splitting across en-dash
   const dateRangeRe = /\b((?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4})\s*[-–—]\s*(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4}|Present|Current))\b/i;
 
   let candidateName = "";
@@ -87,17 +106,17 @@ export function generateATSLatex(optimizedText: string): string {
   let isHeaderArea = true;
   let inItemize = false;
   let bodyLatex = "";
+  let currentSectionName = "";
 
   function closeItemize() {
     if (inItemize) {
-      bodyLatex += "\\end{itemize}\n\\vspace{-2pt}\n";
+      bodyLatex += "\\end{itemize}\\vspace{-2pt}\n";
       inItemize = false;
     }
   }
 
   for (let i = 0; i < cleanLines.length; i++) {
-    const rawLine = cleanLines[i];
-    const line = rawLine.trim();
+    const line = cleanLines[i].trim();
     if (!line) continue;
 
     // 1. Major Section Heading Check
@@ -107,6 +126,7 @@ export function generateATSLatex(optimizedText: string): string {
     if (headingMatch) {
       isHeaderArea = false;
       closeItemize();
+      currentSectionName = headingMatch[0];
       bodyLatex += `\n\\section{${headingMatch[0]}}\n`;
       continue;
     }
@@ -119,7 +139,12 @@ export function generateATSLatex(optimizedText: string): string {
       }
       const looksLikeContact = /[@|]|github|linkedin|\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/i.test(line) || (line.length < 80 && i <= 3);
       if (looksLikeContact) {
-        const parts = line.split(/[|•–—\t]+/).map(p => p.trim()).filter(Boolean);
+        const parts = transformPlainTextPreservingHrefs(line, (plain) =>
+          plain.replace(/[|•–—\t]+/g, "\u0000")
+        )
+          .split("\u0000")
+          .map((p) => p.trim())
+          .filter(Boolean);
         if (parts.length > 0) {
           contactTokens.push(...parts);
         } else {
@@ -135,11 +160,10 @@ export function generateATSLatex(optimizedText: string): string {
     if (bulletMatch) {
       const bulletContent = bulletMatch[1].trim();
 
-      // Detect Project / Feature titles (e.g. "– PMS Integration Hub", "– Drone GCS Platform")
       const isProjectSubheading =
-        bulletContent.length < 75 &&
+        bulletContent.length < 80 &&
         !bulletContent.endsWith(".") &&
-        !/^(?:developed|engineered|designed|built|architected|spearheaded|created|implemented|optimized|collaborated|conducted|achieved|reduced|improved|managed|led)\b/i.test(bulletContent);
+        !/^(?:developed|engineered|designed|built|architected|spearheaded|created|implemented|optimized|collaborated|conducted|achieved|reduced|improved|managed|led|authored|integrated|orchestrated|automated)\b/i.test(bulletContent);
 
       if (isProjectSubheading) {
         closeItemize();
@@ -147,76 +171,208 @@ export function generateATSLatex(optimizedText: string): string {
           const sep = bulletContent.includes("—") ? "—" : " - ";
           const [pTitle, ...pRest] = bulletContent.split(sep);
           const techOrLink = pRest.join(sep).trim();
-          bodyLatex += `\\textbf{${formatLatexLine(pTitle.trim())}} $|$ \\textit{${formatLatexLine(techOrLink)}}\\\\\n`;
+          bodyLatex += `\\vspace{1.5pt}\\textbf{${formatLatexLine(pTitle.trim(), allKnownLinks)}} \\enspace\\textbar\\enspace \\textit{${formatLatexLine(techOrLink, allKnownLinks)}}\\\\[1pt]\n`;
         } else {
-          bodyLatex += `\\textbf{${formatLatexLine(bulletContent)}}\\\\\n`;
+          bodyLatex += `\\vspace{1.5pt}\\textbf{${formatLatexLine(bulletContent, allKnownLinks)}}\\\\[1pt]\n`;
         }
         continue;
       }
 
       if (!inItemize) {
-        bodyLatex += "\\begin{itemize}[leftmargin=0.15in, label=$\\bullet$, itemsep=-2pt, topsep=2pt]\n";
+        bodyLatex += "\\begin{itemize}\n";
         inItemize = true;
       }
-      bodyLatex += `  \\item ${formatLatexLine(bulletContent)}\n`;
+      bodyLatex += `  \\resumeItem{${formatLatexLine(bulletContent, allKnownLinks)}}\n`;
       continue;
     }
 
     // 4. Non-Bullet Lines
     closeItemize();
 
-    // Check for Category: Value formatting (e.g. "Languages: C++, Python", "Frontend: React...")
+    if (currentSectionName === "PROFESSIONAL SUMMARY") {
+      bodyLatex += `{\\small ${formatLatexLine(line, allKnownLinks)}\\par}\\vspace{2pt}\n`;
+      continue;
+    }
+
     const categoryMatch = line.match(/^([A-Za-z0-9/& -]{2,25}):\s+(.+)$/);
     if (categoryMatch && !line.includes("|") && !dateRangeRe.test(line)) {
-      bodyLatex += `\\textbf{${formatLatexLine(categoryMatch[1])}:} ${formatLatexLine(categoryMatch[2])}\\\\\n`;
+      bodyLatex += `{\\small \\textbf{${formatLatexLine(categoryMatch[1], allKnownLinks)}:} ${formatLatexLine(categoryMatch[2], allKnownLinks)}}\\\\[1pt]\n`;
       continue;
     }
 
-    // Check for Role / Company / Education with Date Range
+    const isNextBulletOrHeading = (l: string) =>
+      !l ||
+      bulletRe.test(l) ||
+      /^[-–—*∗▪▫◦‣▸▹➢➣→+]\s+/.test(l) ||
+      CANONICAL_HEADINGS.some(([, regex]) => regex.test(l.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim()));
+
     const dateMatch = line.match(dateRangeRe);
-    if (dateMatch) {
-      const dateStr = dateMatch[0];
-      const remainingText = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-      if (remainingText) {
-        const parts = remainingText.split(/[|–—]+/).map(p => p.trim()).filter(Boolean);
-        const left = parts.length > 1 ? parts.join(" $|$ ") : remainingText;
-        bodyLatex += `\\textbf{${formatLatexLine(left)}} \\hfill \\textit{${formatLatexLine(dateStr)}}\\\\\n`;
-      } else {
-        bodyLatex += `\\hfill \\textit{${formatLatexLine(dateStr)}}\\\\\n`;
+    const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
+    const nextDateMatch = nextLine.match(dateRangeRe);
+
+    if (["WORK EXPERIENCE", "EDUCATION"].includes(currentSectionName)) {
+      // Pattern A: Pipe-separated with date
+      if (line.includes("|") && dateMatch) {
+        const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
+        const dateIdx = parts.findIndex((p) => dateRangeRe.test(p));
+        const dateStr = dateMatch[0].replace(/\s*[-–—]\s*/, " -- ");
+        const nonDateParts = parts.filter((_, idx) => idx !== dateIdx);
+        const primary = nonDateParts[0] || "";
+        const secondary = nonDateParts[1] || "";
+        const loc = nonDateParts[2] || "";
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(primary, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(secondary, allKnownLinks)}}{${formatLatexLine(dateStr, allKnownLinks)}}\n`;
+        continue;
       }
-      continue;
+
+      // Pattern B: CURRENT line has date (e.g. "Platform Engineer April 2026 – September 2026")
+      // and NEXT line is company/location (e.g. "JulleyOnline Private Limited India")
+      if (dateMatch) {
+        const dateStr = dateMatch[0].replace(/\s*[-–—]\s*/, " -- ");
+        const lineRemaining = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+
+        if (nextLine && !isNextBulletOrHeading(nextLine) && !nextDateMatch && nextLine.length < 90) {
+          let org = nextLine;
+          let loc = "";
+          if (nextLine.includes("|")) {
+            const orgParts = nextLine.split("|").map((p) => p.trim()).filter(Boolean);
+            org = orgParts[0] || nextLine;
+            loc = orgParts.slice(1).join(", ");
+          } else if (nextLine.includes(",")) {
+            const orgParts = nextLine.split(",").map((p) => p.trim()).filter(Boolean);
+            if (orgParts.length >= 2) {
+              org = orgParts[0];
+              loc = orgParts.slice(1).join(", ");
+            }
+          }
+          const isRoleFirst = /engineer|developer|architect|lead|manager|analyst|intern|scientist|consultant|associate|founder|director|bachelor|master|phd|degree|b\.?tech|m\.?tech|b\.?s|m\.?s/i.test(lineRemaining);
+          if (isRoleFirst) {
+            bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(lineRemaining, allKnownLinks)}}{${formatLatexLine(dateStr, allKnownLinks)}}\n`;
+          } else {
+            bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(lineRemaining, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(dateStr, allKnownLinks)}}\n`;
+          }
+          i++;
+          continue;
+        }
+
+        if (lineRemaining) {
+          const parts = lineRemaining.split(/[|–—]+/).map((p) => p.trim()).filter(Boolean);
+          const left = parts.length > 1 ? parts.map((p) => formatLatexLine(p, allKnownLinks)).join(" \\enspace\\textbar\\enspace ") : formatLatexLine(lineRemaining, allKnownLinks);
+          bodyLatex += `\\textbf{${left}} \\hfill \\textit{${formatLatexLine(dateStr, allKnownLinks)}}\\\\[1pt]\n`;
+        } else {
+          bodyLatex += `\\hfill \\textit{${formatLatexLine(dateStr, allKnownLinks)}}\\\\[1pt]\n`;
+        }
+        continue;
+      }
+
+      // Pattern C: CURRENT line does NOT have date, but NEXT line has date
+      if (!dateMatch && nextDateMatch && !line.endsWith(".") && line.length < 80 && /^[A-Z]/.test(line)) {
+        const nextDateStr = nextDateMatch[0].replace(/\s*[-–—]\s*/, " -- ");
+        const nextRemaining = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+
+        let org = line;
+        let loc = "";
+        if (line.includes("|")) {
+          const orgParts = line.split("|").map((p) => p.trim()).filter(Boolean);
+          org = orgParts[0] || line;
+          loc = orgParts.slice(1).join(", ");
+        }
+
+        const isLineRole = /engineer|developer|architect|lead|manager|analyst|intern|scientist|consultant|associate|founder|director|bachelor|master|phd|degree|b\.?tech|m\.?tech|b\.?s|m\.?s/i.test(line);
+        if (isLineRole) {
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(nextRemaining || "Company", allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(nextDateStr, allKnownLinks)}}\n`;
+        } else {
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(nextRemaining || org, allKnownLinks)}}{${formatLatexLine(nextDateStr, allKnownLinks)}}\n`;
+        }
+        i++;
+        continue;
+      }
     }
 
-    // Check for pipe-separated headers (e.g. "Company | Location" or "Degree | College")
+    // Projects: Detect Project Title + Tech stack lines
+    if (currentSectionName === "PROJECTS") {
+      const projectHrefs: string[] = [];
+      let cleanProjLine = line;
+
+      cleanProjLine = cleanProjLine.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+        projectHrefs.push(markdownLinkToLatexHref(label, url));
+        return "";
+      });
+
+      // Also check known links that appear as words in this project line (e.g. "Code", "Live Demo")
+      for (const kLink of allKnownLinks) {
+        if (!kLink.url) continue;
+        const anchor = kLink.text.trim();
+        if (!anchor) continue;
+        const anchorRe = new RegExp(`\\b${anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+        if (anchorRe.test(cleanProjLine)) {
+          projectHrefs.push(markdownLinkToLatexHref(anchor, kLink.url));
+          cleanProjLine = cleanProjLine.replace(anchorRe, "");
+        }
+      }
+
+      const cleanTitle = cleanProjLine
+        .replace(/\b(code|live demo|demo|live)\b/gi, "")
+        .replace(/^[|–—\s]+|[|–—\s]+$/g, "")
+        .trim();
+
+      const rightCol = projectHrefs.length > 0 ? projectHrefs.join(" \\enspace\\textbar\\enspace ") : "\\textit{Project}";
+
+      if (nextLine && !nextLine.match(bulletRe) && !CANONICAL_HEADINGS.some(([, regex]) => regex.test(nextLine))) {
+        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(cleanTitle, allKnownLinks)}} \\enspace\\textbar\\enspace \\emph{${formatLatexLine(nextLine, allKnownLinks)}}}{${rightCol}}\n`;
+        i++;
+        continue;
+      }
+    }
+
+    // Pipe-separated headers without date
     if (line.includes("|")) {
-      const parts = line.split("|").map(p => p.trim()).filter(Boolean);
+      const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
       if (parts.length >= 2) {
-        bodyLatex += `\\textit{${formatLatexLine(parts[0])}} \\hfill \\textit{${formatLatexLine(parts.slice(1).join(" $|$ "))}}\\\\\n`;
+        bodyLatex += `\\textit{${formatLatexLine(parts[0], allKnownLinks)}} \\hfill \\textit{${parts.slice(1).map((p) => formatLatexLine(p, allKnownLinks)).join(" \\enspace\\textbar\\enspace ")}}\\\\[1pt]\n`;
       } else {
-        bodyLatex += `${formatLatexLine(line)}\\\\\n`;
+        bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
       }
       continue;
     }
 
-    // Plain narrative / summary line
-    bodyLatex += `${formatLatexLine(line)}\\\\\n`;
+    // Plain line
+    if (currentSectionName === "CERTIFICATIONS") {
+      const certTokens = line.split(/[|•–—\t]+/).map((p) => formatLatexLine(p.trim(), allKnownLinks)).filter(Boolean);
+      bodyLatex += `{\\small ${certTokens.join(" \\enspace\\textbar\\enspace ")}\\par}\\vspace{1.5pt}\n`;
+    } else {
+      bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
+    }
   }
 
   closeItemize();
 
-  // Clean contact icons and standardize contacts
   const cleanContacts = contactTokens
     .map((t) => t.replace(/[ƒ§ï\u2217*]/g, "").trim())
     .filter(Boolean);
-  const formattedContacts = cleanContacts.map(token => formatLatexLine(token)).join(" $|$ ");
+  const formattedContacts = cleanContacts
+    .map((token) => formatLatexLine(token, allKnownLinks))
+    .join(" \\enspace\\textbar\\enspace ");
 
-  return `%-------------------------
-% ATS-Optimized LaTeX Resume (Clean Single/Multi-Page Ready)
-% Vector Typography, Zero Page Numbers, 100% Workday, Taleo & Greenhouse Compliant
+  const totalWords = cleanLines.join(" ").split(/\s+/).length;
+  const isMultiPage = cleanLines.length > 34 || totalWords > 400;
+
+  const geometrySetting = isMultiPage
+    ? "\\usepackage[a4paper,left=0.55in,right=0.55in,top=0.5in,bottom=0.5in]{geometry}"
+    : "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+  const titlespacingSetting = isMultiPage
+    ? "\\titlespacing*{\\section}{0pt}{5pt}{2.5pt}"
+    : "\\titlespacing*{\\section}{0pt}{3pt}{1.5pt}";
+  const itemizeSetting = isMultiPage
+    ? "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=1.5pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}"
+    : "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=0.8pt, parsep=0pt, topsep=1pt, partopsep=0pt}";
+
+  let resultLatex = `%-------------------------
+% Adaptive ATS LaTeX Resume
+% Clean Typography, Zero Page Numbers, 100% ATS Compliant
 %------------------------
 
-\\documentclass[letterpaper,10pt]{article}
-\\usepackage[empty]{fullpage}
+\\documentclass[a4paper,10pt]{article}
+${geometrySetting}
 \\usepackage{titlesec}
 \\usepackage[usenames,dvipsnames]{color}
 \\usepackage{enumitem}
@@ -227,20 +383,40 @@ export function generateATSLatex(optimizedText: string): string {
 \\input{glyphtounicode}
 \\pdfgentounicode=1
 
-% Balanced Page Geometry Margins
-\\addtolength{\\oddsidemargin}{-0.55in}
-\\addtolength{\\evensidemargin}{-0.55in}
-\\addtolength{\\textwidth}{1.1in}
-\\addtolength{\\topmargin}{-0.6in}
-\\addtolength{\\textheight}{1.2in}
-
 \\urlstyle{same}
 \\raggedbottom
 \\raggedright
 \\setlength{\\tabcolsep}{0in}
 
-% Format Section Headings with clean full-width rule
-\\titleformat{\\section}{\\vspace{-4pt}\\scshape\\raggedright\\large\\bfseries}{}{0em}{}[\\color{black}\\titlerule \\vspace{-4pt}]
+\\titleformat{\\section}{\\scshape\\raggedright\\large\\bfseries}{}{0em}{}[\\color{black}\\titlerule]
+${titlespacingSetting}
+
+${itemizeSetting}
+
+\\newcommand{\\resumeItem}[1]{
+  \\item #1
+}
+
+\\newcommand{\\resumeSubheading}[4]{
+  \\vspace{1.5pt}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    \\textbf{#1} & \\textit{\\small #2} \\\\[-0.5pt]
+    \\textit{\\small #3} & \\textit{\\small #4}
+  \\end{tabular*}\\vspace{-1pt}\\nopagebreak[4]
+}
+
+\\newcommand{\\resumeProjectHeading}[2]{
+  \\vspace{1.5pt}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    #1 & \\textit{\\small #2}
+  \\end{tabular*}\\vspace{-1pt}\\nopagebreak[4]
+}
+
+\\newcommand{\\resumeDivider}{\\enspace\\textbar\\enspace}
+\\newcommand{\\resumeSubHeadingListStart}{\\begin{itemize}[leftmargin=0.15in, label={}]}
+\\newcommand{\\resumeSubHeadingListEnd}{\\end{itemize}}
+\\newcommand{\\resumeItemListStart}{\\begin{itemize}}
+\\newcommand{\\resumeItemListEnd}{\\end{itemize}}
 
 \\begin{document}
 \\pagestyle{empty}
@@ -248,16 +424,23 @@ export function generateATSLatex(optimizedText: string): string {
 
 %----------HEADING----------
 \\begin{center}
-  {\\Huge \\scshape \\textbf{${escapeLatex(candidateName || "Candidate Name")}}} \\\\ \\vspace{3pt}
+  {\\LARGE \\scshape \\textbf{${escapeLatex(candidateName || "Candidate Name")}}} \\\\[2pt]
   \\small ${formattedContacts}
 \\end{center}
-\\vspace{-8pt}
+\\vspace{-3pt}
 
 %----------BODY SECTIONS----------
 ${bodyLatex}
 
 \\end{document}
 `;
+
+  resultLatex = ensureAllHrefsPreservedInLatex(
+    resultLatex,
+    [options?.originalLatex, ...(options?.knownLinks ? [options.knownLinks] : []), optimizedText].filter(Boolean) as (string | ExtractedHyperlink[])[]
+  );
+
+  return resultLatex;
 }
 
 export function canReplaceFlexible(fullText: string, snippet: string): boolean {
@@ -541,69 +724,115 @@ export function getCandidateFilename(
 }
 
 export function resolvePlaceholder(bullet: string, customVal?: string): string {
-  const fallback = customVal?.trim() || "42%";
-  const cleanVal = fallback.includes("%") ? fallback : `${fallback}%`;
+  if (customVal && customVal.trim()) {
+    const cleanVal = customVal.trim().includes("%") ? customVal.trim() : `${customVal.trim()}%`;
+    return bullet
+      .replace(/\[[YX]\]%?|\[[YX]%\]/gi, cleanVal)
+      .replace(/\[N\]/gi, cleanVal.replace(/[^0-9]/g, "") || cleanVal)
+      .replace(/\[\$X\]|\$\[X\]|\[\$\d+K?\]/gi, cleanVal.startsWith("$") ? cleanVal : `$${cleanVal}`)
+      .replace(/\[(?:METRIC|PERCENT|NUMBER|VALUE|RESULT)\]%?/gi, cleanVal)
+      .replace(/\.\s+[a-z][\s\S]*?(?=\.|$)/g, (match) => match);
+  }
+
+  // When no verified custom metric is provided, strip the placeholder gracefully without fabricating numbers
   return bullet
-    .replace(/\[[YX]\]%?|\[[YX]%\]/gi, cleanVal)
-    .replace(/\[N\]/gi, fallback.replace(/[^0-9]/g, "") || "40")
-    .replace(/\[\$X\]|\$\[X\]|\[\$\d+K?\]/gi, "$45K")
-    .replace(/\[(?:METRIC|PERCENT|NUMBER|VALUE|RESULT)\]%?/gi, cleanVal)
-    .replace(/\.\s+[a-z][\s\S]*?(?=\.|$)/g, (match) => match); // clean dangling sentence fragments
+    .replace(/(?:,\s*)?(?:by|to|of|reaching|achieving|resulting in)\s+\[[YX]\]\\?%?/gi, "")
+    .replace(/\[[YX]\]\\?%?|\[[YX]\\?%\]/gi, "")
+    .replace(/(?:,\s*)?(?:for|serving|across|supporting)\s+\[N\]\s*(?:users|records|requests|endpoints|queries|customers)?/gi, "")
+    .replace(/\[N\]/gi, "")
+    .replace(/(?:,\s*)?(?:saving|generating|worth)\s+(?:\[\$X\]|\$\[X\]|\[\$\d+K?\])/gi, "")
+    .replace(/\[\$X\]|\$\[X\]|\[\$\d+K?\]/gi, "")
+    .replace(/(?:,\s*)?(?:by|to|of)\s+\[(?:METRIC|PERCENT|NUMBER|VALUE|RESULT)\]\\?%?/gi, "")
+    .replace(/\[(?:METRIC|PERCENT|NUMBER|VALUE|RESULT)\]\\?%?/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+,[ \t]*/g, ", ")
+    .replace(/,[ \t]*\./g, ".")
+    .replace(/[ \t]+\./g, ".")
+    .replace(/\.{2,}/g, ".")
+    .trim();
 }
 
 /**
  * Scans content for any lingering bracketed placeholders (e.g. [Y]%, [X], [N], [$X], [A-Z0-9_%])
- * and replaces them with context-appropriate high-impact metrics (42%, 35%, 2.5x, 10K+, $45K)
- * ensuring zero brackets and pristine typography in both text and LaTeX.
+ * and removes them gracefully without fabricating arbitrary metrics (never fabricating 42%, 2.5x, or $45K),
+ * ensuring zero unverified brackets and pristine typography in both text and LaTeX.
  */
 export function cleanLingeringPlaceholders(content: string, isLatex = false): string {
-  const percentReplacements = isLatex ? ["42\\%", "35\\%", "28\\%"] : ["42%", "35%", "28%"];
-  let pIdx = 0;
-
   let cleaned = content;
 
-  // 1. Multiplier patterns: [X]x -> 2.5x
-  cleaned = cleaned.replace(/\[[A-Z0-9_%]+\]\s*[xX]\b/g, "2.5x");
+  // 1. Multiplier patterns: [X]x, [Y]x -> remove gracefully without fabricating 2.5x
+  cleaned = cleaned.replace(/(?:,\s*)?(?:by|to|of)?\s*\[[A-Z0-9_%]+\]\s*[xX]\b/g, "");
 
-  // 2. Dollar metric patterns: [$X] -> $45K or \$45K in LaTeX
-  cleaned = cleaned.replace(/(?:\[\$[A-Z0-9_]+\]|\$\[[A-Z0-9_]+\])/gi, isLatex ? "\\$45K" : "$45K");
+  // 2. Dollar metric patterns: [$X] -> remove gracefully without fabricating $45K
+  cleaned = cleaned.replace(/(?:,\s*)?(?:saving|generating|worth)?\s*(?:\[\$[A-Z0-9_]+\]|\$\[[A-Z0-9_]+\]|\[\$\d+K?\])/gi, "");
 
-  // 3. Percentage patterns: [Y]%, [X]%, [Y%], [X%] or [Y]\% in LaTeX
+  // 3. Percentage patterns: [Y]%, [X]%, [Y%], [X%] or [Y]\% in LaTeX -> remove gracefully without fabricating 42%
   const percentRegex = isLatex
-    ? /(?:\[[A-Z0-9_]+\]\\?%|\[[A-Z0-9_]+\\?%\])/gi
-    : /(?:\[[A-Z0-9_]+\]%|\[[A-Z0-9_]+%\])/gi;
+    ? /(?:,\s*)?(?:by|to|of|reaching|achieving|resulting in)?\s*(?:\[[A-Z0-9_]+\]\\?%|\[[A-Z0-9_]+\\?%\])/gi
+    : /(?:,\s*)?(?:by|to|of|reaching|achieving|resulting in)?\s*(?:\[[A-Z0-9_]+\]%|\[[A-Z0-9_]+%\])/gi;
+  cleaned = cleaned.replace(percentRegex, "");
 
-  cleaned = cleaned.replace(percentRegex, () => {
-    const val = percentReplacements[pIdx % percentReplacements.length];
-    pIdx++;
-    return val;
-  });
+  // 4. Number / scale patterns: [N] -> remove gracefully without fabricating 40 or 10K+
+  cleaned = cleaned.replace(/(?:,\s*)?(?:for|serving|across|supporting)?\s*\[N\](?:\s+(?:users|records|requests|endpoints|queries|customers))?/gi, "");
 
-  // 4. Number / scale patterns: [N] -> 40 or 10K+ if near users/records/requests
-  cleaned = cleaned.replace(/\[N\](?:\s+(?:users|records|requests|endpoints|queries|customers))?/gi, (match) => {
-    if (/users|records|requests|endpoints|queries|customers/i.test(match)) {
-      return match.replace(/\[N\]/i, "10K+");
+  // 5. Any remaining lingering all-caps bracket placeholders: e.g. [METRIC], [PERCENT], [X], [Y], [RESULT]
+  cleaned = cleaned.replace(/\[([A-Z0-9_%$+ -]+)\]/g, (fullMatch, inner, offset, fullString) => {
+    const trimmed = inner.trim();
+    if (trimmed.includes("=")) return fullMatch;
+
+    // Do not touch markdown links e.g. [title](url)
+    const after = fullString.slice(offset + fullMatch.length, offset + fullMatch.length + 5);
+    if (after.startsWith("(")) return fullMatch;
+
+    if (isLatex) {
+      const before = fullString.slice(Math.max(0, offset - 60), offset);
+
+      // Do not touch macro argument definitions: \newcommand{\foo}[1]
+      if (/(?:\\newcommand\*?|\\renewcommand\*?|\\providecommand\*?)\s*\{[^}]*\}\s*$/i.test(before)) {
+        return fullMatch;
+      }
+      // Do not touch LaTeX package / command options
+      if (/\\(?:usepackage|documentclass|titlespacing\*?|titleformat\*?|setlist|tabular\*?|vspace|hspace|rule|addtolength|setlength|makebox|parbox|raisebox)\s*$/i.test(before)) {
+        return fullMatch;
+      }
+      // Do not touch line breaks with dimensions: \\[-1pt]
+      if (/\\\\+\s*$/.test(before)) {
+        return fullMatch;
+      }
+      // Do not touch environment options: \begin{itemize}[...]
+      if (/\\(?:begin|end)\{[^}]*\}\s*$/i.test(before)) {
+        return fullMatch;
+      }
+      // Pure numbers or dimensions are never placeholders in LaTeX
+      if (/^\d+$/.test(trimmed)) return fullMatch;
+      if (/^-?\d+(\.\d+)?(?:pt|in|cm|mm|em|ex)$/i.test(trimmed)) return fullMatch;
+      // LaTeX options / alignment specifiers / internal commands
+      if (/^(?:empty|hidelinks|letterpaper|a4paper|10pt|9pt|utf8|t|b|c|h|p)$/i.test(trimmed)) return fullMatch;
+      if (trimmed.startsWith("\\")) return fullMatch;
+    } else {
+      if (/^\d+$/.test(trimmed)) return fullMatch;
     }
-    return "40";
+
+    // Must contain letters or % or $ to be a placeholder
+    if (!/[A-Z]/i.test(trimmed)) return fullMatch;
+
+    return "";
   });
 
-  // 5. Any remaining lingering all-caps bracket placeholders: /[A-Z0-9_%$+ -]+/
-  // In LaTeX, ensure we don't touch package options like \usepackage[empty] or \begin{itemize}[leftmargin=...]
-  const lingeringRegex = isLatex
-    ? /(?<!\\(?:usepackage|documentclass|begin\{itemize\}))\s*\[([A-Z0-9_%$+ -]+)\]/g
-    : /\[([A-Z0-9_%$+ -]+)\]/g;
+  // 6. Clean dangling punctuation fragments (e.g. ", ." or multiple dots) without collapsing newlines
+  cleaned = cleaned
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+,[ \t]*/g, ", ")
+    .replace(/,[ \t]*\./g, ".")
+    .replace(/[ \t]+\./g, ".")
+    .replace(/\.{2,}/g, ".");
 
-  cleaned = cleaned.replace(lingeringRegex, (fullMatch, inner) => {
-    if (inner.includes("=")) return fullMatch;
-    // Don't replace LaTeX package names if any were caught
-    if (/^(?:empty|hidelinks|letterpaper|10pt|utf8)$/i.test(inner.trim())) return fullMatch;
-    const val = percentReplacements[pIdx % percentReplacements.length];
-    pIdx++;
-    return val;
-  });
-
-  // 6. Clean dangling punctuation fragments (e.g. ", ." or multiple dots)
-  cleaned = cleaned.replace(/,\s*\./g, ".").replace(/\.{2,}/g, ".");
+  // Clean raw or escaped pipe sequences
+  if (isLatex) {
+    cleaned = cleaned.replace(/(?:\\\$[ \t]*[|][ \t]*\\\$|\\\$[ \t]*\\\|[ \t]*\\\$|\$[ \t]*\|[ \t]*\$)/g, "\\enspace\\textbar\\enspace");
+  } else {
+    cleaned = cleaned.replace(/(?:\\\$[ \t]*[|][ \t]*\\\$|\\\$[ \t]*\\\|[ \t]*\\\$|\$[ \t]*\|[ \t]*\$)/g, " | ");
+  }
 
   return cleaned;
 }
@@ -635,8 +864,9 @@ export function runAllRemediationPasses(params: {
     grammarFixes: number;
   };
 } {
-  let updatedText = params.text;
-  let updatedLatex = params.latex && params.latex.trim() ? params.latex : generateATSLatex(params.text);
+  const normalizedText = normalizeWrappedBullets(params.text);
+  let updatedText = normalizedText;
+  let updatedLatex = params.latex && params.latex.trim() ? params.latex : generateATSLatex(normalizedText, { originalLatex: params.latex });
 
   let rewrites = 0;
   let passiveUpgrades = 0;
@@ -651,7 +881,11 @@ export function runAllRemediationPasses(params: {
   if (params.audit?.action_verb_and_par_rewrites) {
     params.audit.action_verb_and_par_rewrites.forEach((r, i) => {
       if (r.original_bullet && r.optimized_par_bullet) {
-        const replacement = resolvePlaceholder(r.optimized_par_bullet, params.customMetrics?.[i]);
+        const customVal = params.customMetrics?.[i];
+        const replacement = resolvePlaceholder(r.optimized_par_bullet, customVal);
+        if (customVal && customVal.trim()) {
+          metricsAdded++;
+        }
         if (canReplaceFlexible(updatedText, r.original_bullet)) {
           updatedText = replaceFlexible(updatedText, r.original_bullet, replacement);
           rewrites++;
@@ -734,133 +968,19 @@ export function runAllRemediationPasses(params: {
   updatedText = linesPass3.join("\n");
 
   // ──────────────────────────────────────────────────────────────
-  // PASS 4: Full Twice-Rule 1.0x Promotion
+  // PASS 4: Source-Grounded Skill Validation (Zero Injections)
+  // Per strict content policy: NEVER inject missing JD skills as claimed
+  // skills into the candidate's resume, and NEVER fabricate phrases like
+  // ", leveraging ${skill} for scalable execution."
+  // Missing skills from JD are diagnostic recommendations for candidate review ONLY.
   // ──────────────────────────────────────────────────────────────
-  const reqs = extractRequirementsFromJobText(params.jobText);
-  if (reqs.length > 0) {
-    const textLines = resumeLines(updatedText);
-    const missingSkills: string[] = [];
-    const skillsOnlyList: string[] = [];
-
-    for (const req of reqs) {
-      const inSkills = textLines.some(l => l.section === "skills" && containsSkill(l.text, req.keyword));
-      const inExp = textLines.some(l => ["experience", "projects"].includes(l.section) && containsSkill(l.text, req.keyword));
-
-      if (!inSkills && !inExp) {
-        missingSkills.push(req.keyword);
-        skillsOnlyList.push(req.keyword);
-      } else if (inSkills && !inExp) {
-        skillsOnlyList.push(req.keyword);
-      }
-    }
-
-    // Step 4A: Inject missing skills into Skills section
-    if (missingSkills.length > 0) {
-      const skillsMatch = updatedText.match(
-        /^(\s*(?:technical\s+|core\s+|key\s+|professional\s+)?(?:skills|technologies|competencies|skill\s+set)\s*:?)(.*)$/im
-      );
-      if (skillsMatch) {
-        const fullHeading = skillsMatch[0];
-        const afterHeading = skillsMatch[2].trim();
-        const addition = missingSkills.join(", ");
-        const replacement = afterHeading ? `${fullHeading}, ${addition}` : `${fullHeading}\n• ${addition}`;
-        updatedText = updatedText.replace(fullHeading, replacement);
-      }
-
-      // Also inject into LaTeX skills section
-      const latexSkillsPattern = /(\\section\*?\{(?:Technical\s+|Core\s+|Key\s+)?Skills[^\}]*\})([\s\S]*?)(\\section|\\end\{document\})/i;
-      const lMatch = updatedLatex.match(latexSkillsPattern);
-      if (lMatch) {
-        const heading = lMatch[1];
-        const body = lMatch[2];
-        const tail = lMatch[3];
-        const injected = ` \\textbf{Core Additions}: ${escapeLatexForPatch(missingSkills.join(", "))}\\\\\n`;
-        updatedLatex = updatedLatex.replace(latexSkillsPattern, `${heading}${body}${injected}${tail}`);
-      }
-    }
-
-    // Step 4B: Weave skills-only keywords into Experience & Projects bullets
-    const linesPass4 = updatedText.split("\n");
-    let currentSec = "contact";
-    let skillIdx = 0;
-
-    const headingRes: [string, RegExp][] = [
-      ["skills", /^(?:#{1,3}\s*)?(?:technical |core |key |professional )?(?:skills|technologies|competencies|skill set|proficiencies|tools|areas of expertise)\s*:?$/i],
-      ["experience", /^(?:#{1,3}\s*)?(?:work |professional |relevant |employment |career )?(?:experience|employment|work history|internships)\s*:?$/i],
-      ["projects", /^(?:#{1,3}\s*)?(?:personal |selected |technical |academic |key |featured |notable )?projects(?:\s+experience)?\s*:?$/i],
-      ["education", /^(?:#{1,3}\s*)?(?:education|academic background|qualifications|academics|degrees)\s*:?$/i],
-      ["summary", /^(?:#{1,3}\s*)?(?:professional |career |executive )?(?:summary|profile|objective|overview|about me)\s*:?$/i],
-    ];
-
-    for (let i = 0; i < linesPass4.length && skillIdx < skillsOnlyList.length; i++) {
-      const rawLine = linesPass4[i];
-      const headingMatch = headingRes.find(([, regex]) => regex.test(rawLine.trim()));
-      if (headingMatch) {
-        currentSec = headingMatch[0];
-        continue;
-      }
-
-      if (["experience", "projects"].includes(currentSec) && BULLET_START_RE.test(rawLine)) {
-        const skill = skillsOnlyList[skillIdx];
-        if (!rawLine.toLowerCase().includes(skill.toLowerCase())) {
-          const trimmedEnd = rawLine.trimEnd();
-          const cleanLine = trimmedEnd.endsWith(".") ? trimmedEnd.slice(0, -1) : trimmedEnd;
-          const enhancedLine = `${cleanLine}, leveraging ${skill} for scalable execution.`;
-
-          linesPass4[i] = enhancedLine;
-          updatedLatex = replaceLatexBulletFlexible(updatedLatex, rawLine, enhancedLine);
-          skillIdx++;
-          twicePromotions++;
-        }
-      }
-    }
-    updatedText = linesPass4.join("\n");
-  }
 
   // ──────────────────────────────────────────────────────────────
-  // PASS 5: Ensure >=68% Quantification Ratio
+  // PASS 5: Source-Grounded Metric Preservation (Zero Hallucinations)
+  // Per strict content policy: NEVER inject fabricated metrics or arbitrary
+  // percentages (e.g. "reducing latency by 34% across distributed endpoints").
+  // Retain numerical achievements ONLY when supported by the original resume.
   // ──────────────────────────────────────────────────────────────
-  const scoredLines = resumeLines(updatedText);
-  const expProjBullets = scoredLines.filter(
-    (l) => ["experience", "projects"].includes(l.section) && l.text.trim().length > 25 && BULLET_START_RE.test(l.text)
-  );
-
-  const quantifiedCount = expProjBullets.filter((b) => METRIC_RE.test(b.text)).length;
-  const currentRatio = expProjBullets.length > 0 ? quantifiedCount / expProjBullets.length : 0;
-
-  if (currentRatio < 0.68 && expProjBullets.length > 0) {
-    const targetQuantified = Math.ceil(expProjBullets.length * 0.70);
-    const needToAdd = Math.max(0, targetQuantified - quantifiedCount);
-
-    const IMPACT_CLAUSES = [
-      ", reducing latency by 34% across distributed endpoints.",
-      ", improving system throughput by 28% under peak production load.",
-      ", cutting API response times by 40% while supporting 10K+ daily active users.",
-      ", boosting query execution efficiency by 35% across 500K+ records.",
-      ", achieving 99.9% uptime SLA with zero-downtime CI/CD deployments.",
-      ", decreasing compute resource consumption by 25% across cloud clusters.",
-    ];
-    let clauseIdx = 0;
-    let added = 0;
-
-    const linesPass5 = updatedText.split("\n");
-    for (let i = 0; i < linesPass5.length && added < needToAdd; i++) {
-      const rawLine = linesPass5[i];
-      if (BULLET_START_RE.test(rawLine) && !METRIC_RE.test(rawLine)) {
-        const trimmedEnd = rawLine.trimEnd();
-        const baseLine = trimmedEnd.endsWith(".") ? trimmedEnd.slice(0, -1) : trimmedEnd;
-        const clause = IMPACT_CLAUSES[clauseIdx % IMPACT_CLAUSES.length];
-        clauseIdx++;
-
-        const quantifiedLine = `${baseLine}${clause}`;
-        linesPass5[i] = quantifiedLine;
-        updatedLatex = replaceLatexBulletFlexible(updatedLatex, rawLine, quantifiedLine);
-        added++;
-        metricsAdded++;
-      }
-    }
-    updatedText = linesPass5.join("\n");
-  }
 
   // ──────────────────────────────────────────────────────────────
   // PASS 6: Grammar, Dialect & ASCII Cleanup
@@ -887,6 +1007,7 @@ export function runAllRemediationPasses(params: {
   // ──────────────────────────────────────────────────────────────
   updatedText = cleanLingeringPlaceholders(updatedText, false);
   updatedLatex = cleanLingeringPlaceholders(updatedLatex, true);
+  updatedLatex = updatedLatex.replace(/\\\\+(\s*\\(?:end\{itemize\}|end\{tabular\*?\}|section))/g, "$1");
 
   // Clean unwanted pagination lines e.g. "-- 1 of 2 --", "Page 1 of 2"
   updatedText = updatedText
@@ -901,6 +1022,12 @@ export function runAllRemediationPasses(params: {
   }
   if (!updatedLatex.includes("pagestyle{empty}") && updatedLatex.includes("\\begin{document}")) {
     updatedLatex = updatedLatex.replace("\\begin{document}", "\\begin{document}\n\\pagestyle{empty}\n\\thispagestyle{empty}");
+  }
+
+  if (params.latex && params.latex.trim()) {
+    updatedLatex = restoreMissingHyperlinksInLatex(updatedLatex, params.latex);
+  } else if (params.text && params.text.includes("](")) {
+    updatedLatex = restoreMissingHyperlinksInLatex(updatedLatex, params.text);
   }
 
   return {
@@ -956,6 +1083,11 @@ export async function autoTailorResumeToJD(params: {
     jobText: params.jobText,
   });
 
+  const finalLatex = ensureAllHrefsPreservedInLatex(
+    optimizedLatex,
+    [params.sourceLatex, params.resumeText].filter(Boolean) as string[]
+  );
+
   const finalScoring = scoreResume(optimizedText, reqs, params.jobText);
   const attachmentFilename = getCandidateFilename(
     params.resumeText,
@@ -964,7 +1096,7 @@ export async function autoTailorResumeToJD(params: {
 
   return {
     optimizedText,
-    optimizedLatex,
+    optimizedLatex: finalLatex,
     baselineScore: baselineScoring.score,
     finalScore: finalScoring.score,
     attachmentFilename,
@@ -975,12 +1107,18 @@ export async function autoTailorResumeToJD(params: {
  * Compiles LaTeX source code into a binary PDF Buffer using TeXLive CGI (pdflatex with xelatex fallback).
  * Returns null if the external compiler is unreachable or returns an error.
  */
-export async function compileLatexToPdfBuffer(latexCode: string): Promise<Buffer | null> {
+export async function compileLatexToPdfBuffer(
+  latexCode: string,
+  linkSource?: string | ExtractedHyperlink[]
+): Promise<Buffer | null> {
   if (!latexCode || !latexCode.trim()) return null;
+
+  // Guarantee 100% of hyperlinks are preserved as clickable \href commands before compiling
+  const safeLatex = ensureAllHrefsPreservedInLatex(latexCode, linkSource ? [linkSource] : []);
 
   async function compileWithEngine(engine: string) {
     const formData = new FormData();
-    formData.append("filecontents[]", latexCode);
+    formData.append("filecontents[]", safeLatex);
     formData.append("filename[]", "document.tex");
     formData.append("engine", engine);
     formData.append("return", "pdf");

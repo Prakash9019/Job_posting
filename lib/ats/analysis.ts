@@ -116,7 +116,7 @@ export type UnifiedATSAudit = z.infer<typeof UnifiedATSAuditSchema>;
 
 export const UNIFIED_ATS_SYSTEM_INSTRUCTION = `SYSTEM PROMPT: UNIFIED ENTERPRISE & PORTAL ATS DIAGNOSTIC ENGINE (v3.0)
 
-You are a deterministic, enterprise-grade Applicant Tracking System (ATS) Diagnostic & Optimization Engine modeled after the combined parsing and ranking pipelines of Workday Recruiting, Oracle Taleo, Greenhouse, Textkernel, and Naukri Resdex.
+You are a deterministic, enterprise-grade Applicant Tracking System (ATS) Diagnostic & Optimization Engine modeled after the combined parsing and ranking pipelines of Workday Recruiting, Oracle Taleo, Greenhouse, Textkernel, and Naukri Resdex, operating with the strategic insight of a senior recruiter in the candidate's target industry.
 
 Your task is to audit the provided [RESUME_TEXT] (and optional [JOB_DESCRIPTION_TEXT]) across 30+ structural, lexical, semantic, and impact checks, returning a single, strictly valid JSON object matching the exact schema below.
 
@@ -139,12 +139,16 @@ Your task is to audit the provided [RESUME_TEXT] (and optional [JOB_DESCRIPTION_
    - Apply the Twice Rule:
      * Full Credit (1.0x): Skill appears in BOTH the Skills section AND a Work Experience / Projects bullet point (twice_rule_satisfied_skills).
      * Partial Credit (0.4x): Skill appears ONLY in the Skills list (twice_rule_missing_experience_mention).
-     * Missing (0.0x): Skill is absent from the resume (hard_skills_missing).
+     * Missing (0.0x): Skill is absent from the resume (hard_skills_missing). NOTE: These are diagnostic suggestions for the candidate's roadmap ONLY and MUST NEVER be automatically inserted or claimed in the candidate's resume.
 
-3. GOOGLE XYZ / PAR (PROBLEM-ACTION-RESULT) BULLET REWRITES:
+3. GOOGLE XYZ / PAR (PROBLEM-ACTION-RESULT) BULLET REWRITES & JD LANGUAGE MIRRORING:
    - Identify the weakest 4-8 bullets (passive voice like "Worked on", "Responsible for", "Helped", or unquantified tasks).
-   - Rewrite each using Google XYZ / PAR: "Accomplished [X] as measured by [Y], by doing [Z]" starting with a strong past-tense action verb (Architected, Engineered, Orchestrated, Optimized, Automated).
-   - FACT-PRESERVATION GUARDRAIL: NEVER invent fake metrics or hallucinate technologies. If a bullet lacks numbers, insert bracketed placeholders like [X]%, [X] ms, or $[X]K.
+   - RECRUITER & JD MIRRORING DIRECTIVE:
+     * Act as a senior recruiter in the candidate's target industry.
+     * When a target Job Description is provided, rewrite candidate bullet points to mirror the specific language, technical vocabulary, and keywords in the job description without lying. Many resumes get overlooked simply because they don't match the language recruiters and ATS filters are searching for.
+     * Keep it strictly truthful to the candidate's actual experience. The AI does not invent experience; it highlights the impact the candidate has already made.
+   - FORMULA & IMPACT: Rewrite each bullet using Google XYZ / PAR: "Accomplished [X] as measured by [Y], by doing [Z]" starting with a strong past-tense action verb (Architected, Engineered, Orchestrated, Optimized, Automated).
+   - FACT-PRESERVATION GUARDRAIL: NEVER invent fake metrics or hallucinate technologies. If a bullet lacks numbers in the resume, insert bracketed placeholders like [X]%, [X] ms, or $[X]K so the candidate can supply verified metrics.
    - EXACT STRING MATCHING: original_bullet MUST be an exact, character-for-character substring copied from the resume text so the frontend .replace() button works.
 
 4. GRAMMAR, DIALECT STANDARDIZATION & VOCABULARY REPETITION:
@@ -185,6 +189,7 @@ export async function analyzeResume(resumeText: string, jobText: string) {
 
   const userPrompt = [
     "Execute all 30+ ATS diagnostic checks on the candidate resume below" + (jobText ? " against the provided target job description" : "") + ".",
+    "Act as a senior recruiter in the target industry. Rewrite weak bullet points to pass ATS filters, mirror the keywords and language in the job description without lying, use strong action verbs, and quantify achievements where possible while keeping it strictly truthful to actual experience.",
     "",
     "REQUIRED JSON OUTPUT SCHEMA (return ONLY this, no markdown fences):",
     JSON.stringify({

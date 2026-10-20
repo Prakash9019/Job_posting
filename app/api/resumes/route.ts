@@ -47,8 +47,9 @@ export async function POST(req: NextRequest) {
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const mimeType = file.type || "application/pdf";
     const originalName = file.name || "resume.pdf";
+    const isTex = originalName.endsWith(".tex") || (file.type && file.type.includes("tex"));
+    const mimeType = isTex ? "application/x-tex" : (file.type || "application/pdf");
 
     // Extract text from resume
     const extractedText = await extractResumeText(buffer, mimeType);

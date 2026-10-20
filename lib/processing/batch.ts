@@ -184,6 +184,19 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
             const rawTexBuf = await storage.readFile(resume.filePath).catch(() => null);
             if (rawTexBuf) sourceLatex = rawTexBuf.toString("utf-8");
           }
+          if (!sourceLatex) {
+            const savedTexResume = await prisma.resume.findFirst({
+              where: {
+                userId: screenshot.batch.userId,
+                OR: [{ fileName: { endsWith: ".tex" } }, { mimeType: { contains: "tex" } }],
+              },
+              orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }],
+            });
+            if (savedTexResume) {
+              const rawTexBuf = await storage.readFile(savedTexResume.filePath).catch(() => null);
+              if (rawTexBuf) sourceLatex = rawTexBuf.toString("utf-8");
+            }
+          }
 
           let effectiveResumeId = resume.id;
           let generationStatus = "GENERATED";
@@ -199,8 +212,8 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
 
             effectiveResumeText = tailored.optimizedText;
 
-            // Compile tailored LaTeX to binary PDF Buffer
-            const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex);
+            // Compile tailored LaTeX to binary PDF Buffer preserving all hyperlinks
+            const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex, sourceLatex || resumeText);
             if (compiledPdf && compiledPdf.length > 0) {
               const tailoredStoragePath = `resumes/tailored-${screenshot.id}-${Date.now()}.pdf`;
               await storage.saveFile(tailoredStoragePath, compiledPdf, "application/pdf");

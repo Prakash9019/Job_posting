@@ -3,6 +3,8 @@ import { requireUser, assertResumeAccess, AuthError } from "@/lib/auth/authoriza
 import { getReadableResumeText, isReadableResumeText } from "@/lib/ai/resume";
 import { analyzeResume } from "@/lib/ats/analysis";
 import { parseATSFile } from "@/lib/ats/parse";
+import { prisma } from "@/lib/db/prisma";
+import { getStorageProvider } from "@/lib/storage";
 export const maxDuration = 120;
 const pending = new Set<string>();
 
@@ -26,7 +28,38 @@ export async function POST(req: NextRequest) {
       }
     } else if (!resumeText && form.get("resumeId")) {
       const resume = await assertResumeAccess(String(form.get("resumeId")), userId);
-      resumeText = (await getReadableResumeText(resume)).replace(/\r\n/g, "\n").trim(); method = "Saved resume text";
+      resumeText = (await getReadableResumeText(resume)).replace(/\r\n/g, "\n").trim();
+      method = "Saved resume text";
+      if (resume.fileName.endsWith(".tex") || resume.mimeType.includes("x-latex") || resume.mimeType.includes("x-tex")) {
+        try {
+          const buf = await getStorageProvider().readFile(resume.filePath);
+          const content = buf.toString("utf-8");
+          if (content.includes("\\documentclass") || content.includes("\\begin{document}")) {
+            rawLatex = content;
+          }
+        } catch {}
+      }
+    }
+
+    const formOriginalLatex = form.get("originalLatex") || form.get("template");
+    if (!rawLatex && typeof formOriginalLatex === "string" && formOriginalLatex.trim()) {
+      rawLatex = formOriginalLatex.trim();
+    }
+
+    if (!rawLatex) {
+      try {
+        const activeResume = await prisma.resume.findFirst({
+          where: { userId, isActive: true },
+          orderBy: { updatedAt: "desc" },
+        });
+        if (activeResume && (activeResume.fileName.endsWith(".tex") || activeResume.mimeType.includes("x-latex") || activeResume.mimeType.includes("x-tex"))) {
+          const buf = await getStorageProvider().readFile(activeResume.filePath);
+          const content = buf.toString("utf-8");
+          if (content.includes("\\documentclass") || content.includes("\\begin{document}")) {
+            rawLatex = content;
+          }
+        }
+      } catch {}
     }
     if (!isReadableResumeText(resumeText) || resumeText.length > 60000) throw new Error("Provide readable resume text between 50 and 60,000 characters.");
     let jobText = String(form.get("jobText") || "").replace(/\r\n/g, "\n").trim();

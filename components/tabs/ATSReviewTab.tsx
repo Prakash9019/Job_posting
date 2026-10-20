@@ -270,6 +270,8 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
             body: JSON.stringify({
               latexCode: data.updatedLatex,
               filename: getCandidateFilename(baseResumeText, effectiveCompany, "pdf"),
+              originalLatex: sourceLatexToUse,
+              resumeText: baseResumeText,
             }),
           });
           if (compileRes.ok) {
@@ -303,6 +305,8 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
           body: JSON.stringify({
             latexCode: deterministic.optimizedLatex,
             filename: getCandidateFilename(baseResumeText, effectiveCompany, "pdf"),
+            originalLatex: sourceLatexToUse,
+            resumeText: baseResumeText,
           }),
         });
         if (compileRes.ok) {
@@ -338,6 +342,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
 
       form.set("jobText", jobText);
       form.set("action", action);
+      if (previousLatex && previousLatex.trim()) form.set("originalLatex", previousLatex);
       if (jobImage) form.set("jobImage", jobImage);
 
       const response = await fetch("/api/ats", { method: "POST", body: form });
@@ -566,6 +571,12 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
       }
     }
 
+    function formatHtmlLinks(str: string): string {
+      let out = str.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '<a href="$2" style="color: #0000ee; text-decoration: underline;" target="_blank" rel="noopener noreferrer">$1</a>');
+      out = out.replace(/(?<!href=")(https?:\/\/[^\s<]+)/g, '<a href="$1" style="color: #0000ee; text-decoration: underline;" target="_blank" rel="noopener noreferrer">$1</a>');
+      return out;
+    }
+
     for (let i = 0; i < rawLines.length; i++) {
       const line = rawLines[i].trim();
       if (!line) continue;
@@ -582,7 +593,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
         if (!candidateName) {
           candidateName = line;
         } else {
-          contactLines.push(line);
+          contactLines.push(formatHtmlLinks(line));
         }
         continue;
       }
@@ -593,15 +604,15 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
           bodyHtml += `<ul style="margin: 0; padding-left: 20px; list-style-type: disc;">\n`;
           inList = true;
         }
-        bodyHtml += `  <li style="font-size: 10pt; line-height: 1.35; margin-bottom: 3.5px; color: #000000;">${bulletMatch[1]}</li>\n`;
+        bodyHtml += `  <li style="font-size: 10pt; line-height: 1.35; margin-bottom: 3.5px; color: #000000;">${formatHtmlLinks(bulletMatch[1])}</li>\n`;
       } else {
         closeList();
         // Bold subheadings like Job Title, Company, Dates if containing | or –
         const isSubhead = /\b(?:20\d\d|19\d\d|present)\b/i.test(line) || line.includes("|") || line.includes("–");
         if (isSubhead) {
-          bodyHtml += `<p style="font-size: 10.5pt; font-weight: bold; margin-top: 6px; margin-bottom: 2px; color: #000000;">${line}</p>\n`;
+          bodyHtml += `<p style="font-size: 10.5pt; font-weight: bold; margin-top: 6px; margin-bottom: 2px; color: #000000;">${formatHtmlLinks(line)}</p>\n`;
         } else {
-          bodyHtml += `<p style="font-size: 10pt; line-height: 1.35; margin-top: 3px; margin-bottom: 3px; color: #000000;">${line}</p>\n`;
+          bodyHtml += `<p style="font-size: 10pt; line-height: 1.35; margin-top: 3px; margin-bottom: 3px; color: #000000;">${formatHtmlLinks(line)}</p>\n`;
         }
       }
     }
@@ -782,6 +793,8 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
         body: JSON.stringify({
           latexCode: texString,
           filename: getCandidateFilename(text, effectiveCompany, "pdf"),
+          originalLatex: previousLatex,
+          resumeText: text,
         }),
       });
 

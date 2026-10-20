@@ -80,6 +80,19 @@ export async function POST(
       const rawTexBuf = await storage.readFile(activeResume.filePath).catch(() => null);
       if (rawTexBuf) sourceLatex = rawTexBuf.toString("utf-8");
     }
+    if (!sourceLatex) {
+      const savedTexResume = await prisma.resume.findFirst({
+        where: {
+          userId,
+          OR: [{ fileName: { endsWith: ".tex" } }, { mimeType: { contains: "tex" } }],
+        },
+        orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }],
+      });
+      if (savedTexResume) {
+        const rawTexBuf = await storage.readFile(savedTexResume.filePath).catch(() => null);
+        if (rawTexBuf) sourceLatex = rawTexBuf.toString("utf-8");
+      }
+    }
 
     let effectiveResumeId = activeResume.id;
     let effectiveResumeText = resumeText;
@@ -95,7 +108,7 @@ export async function POST(
       });
       effectiveResumeText = tailored.optimizedText;
 
-      const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex);
+      const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex, sourceLatex || resumeText);
       if (compiledPdf && compiledPdf.length > 0) {
         const tailoredPath = `resumes/tailored-regen-${draft.id}-${Date.now()}.pdf`;
         await storage.saveFile(tailoredPath, compiledPdf, "application/pdf");
