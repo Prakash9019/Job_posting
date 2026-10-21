@@ -74,7 +74,9 @@ export async function validateAndCompileLatex(
       additionalSources = [linkSource];
     }
   }
-  const safeLatex = ensureAllHrefsPreservedInLatex(latexCode, additionalSources);
+  let safeLatex = ensureAllHrefsPreservedInLatex(latexCode, additionalSources);
+  // Ensure pdfgentounicode doesn't crash non-pdflatex engines like XeTeX
+  safeLatex = safeLatex.replace(/\\pdfgentounicode\s*=\s*1/g, "\\ifdefined\\pdfgentounicode \\pdfgentounicode=1 \\fi");
 
   async function compileWithEngine(engine: string) {
     const formData = new FormData();
@@ -85,8 +87,11 @@ export async function validateAndCompileLatex(
 
     return fetch("https://texlive.net/cgi-bin/latexcgi", {
       method: "POST",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
       body: formData,
-      signal: AbortSignal.timeout(30000), // 30 sec timeout
+      signal: AbortSignal.timeout(8000), // 8 sec timeout to fit within Vercel execution limits
     });
   }
 
@@ -199,7 +204,7 @@ export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): 
   }
 
   const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
-  const modelName = process.env.GEMINI_ATS_MODEL || "gemini-2.5-pro";
+  const modelName = process.env.GEMINI_ATS_MODEL || "gemini-2.5-flash";
 
   const prompt = `You are a Principal LaTeX Typesetting Engineer and Executive Resume Strategist operating as a senior recruiter in the candidate's target industry.
 Your task is to merge ATS-optimized content and AI suggestions into the user's existing LaTeX resume template.
@@ -354,7 +359,7 @@ Preserve all content, headings, sections, macros, and \\href hyperlinks.
 Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
 
       const healingResponse = await ai.models.generateContent({
-        model: "gemini-2.5-pro",
+        model: modelName,
         contents: healingPrompt,
       });
 

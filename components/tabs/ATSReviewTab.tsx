@@ -2507,14 +2507,17 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                       type="button"
                       disabled={compilingPdf || applyingLatex || !(improvedLatex || previousLatex)}
                       onClick={() => {
-                        if (compileError) {
-                          alert(`Cannot download PDF: The LaTeX code produced a compilation warning.\n\n${compileError.message}\n\nPlease review the compiler log below or use 'Download .tex' / 'Open in Overleaf'.`);
+                        if (compiledPdfUrl) {
+                          const a = document.createElement("a");
+                          a.href = compiledPdfUrl;
+                          a.download = getCandidateFilename(text, effectiveCompany, "pdf");
+                          a.click();
                           return;
                         }
                         downloadCompiledLatexPDF(improvedLatex || previousLatex || generateATSLatex(text));
                       }}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 disabled:opacity-50 text-slate-950 font-black text-xs shadow-md shadow-emerald-500/20 transition-all cursor-pointer"
-                      title={compileError ? "Resolve compilation warnings before downloading" : "Compiles directly to ATS-Safe PDF with clickable \\href links"}
+                      title="Compiles or downloads ATS-Safe PDF with clickable \href links"
                     >
                       {compilingPdf ? (
                         <>
@@ -2575,22 +2578,43 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
 
                 {/* Compilation Log Inspector if error occurs */}
                 {compileError && (
-                  <div className="p-3.5 rounded-xl border border-amber-500/40 bg-amber-950/30 text-amber-300 space-y-2 text-xs">
-                    <div className="flex items-center justify-between">
+                  <div className="p-3.5 rounded-xl border border-amber-500/40 bg-amber-950/30 text-amber-300 space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
                       <span className="font-bold flex items-center gap-1.5">
                         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
                         <span>{compileError.message}</span>
                       </span>
-                      <form action="https://www.overleaf.com/docs" method="POST" target="_blank" className="inline">
-                        <input type="hidden" name="snip" value={improvedLatex || previousLatex || generateATSLatex(text)} />
-                        <input type="hidden" name="snip_name" value={getCandidateFilename(text, effectiveCompany, "tex")} />
+                      <div className="flex items-center gap-2 flex-wrap">
                         <button
-                          type="submit"
-                          className="px-2 py-0.5 text-[11px] font-bold rounded bg-amber-500/20 text-amber-200 border border-amber-500/40 hover:bg-amber-500/30 transition-colors"
+                          type="button"
+                          onClick={() => exportATSSafePDF(text)}
+                          className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm transition-colors cursor-pointer"
+                          title="Instant client-side PDF export guaranteed 100% compliant with clickable links"
                         >
-                          🚀 Open in Overleaf
+                          <Printer className="w-3 h-3" />
+                          <span>Save ATS Plain PDF</span>
                         </button>
-                      </form>
+                        <form action="https://www.overleaf.com/docs" method="POST" target="_blank" className="inline">
+                          <input type="hidden" name="snip" value={improvedLatex || previousLatex || generateATSLatex(text)} />
+                          <input type="hidden" name="snip_name" value={getCandidateFilename(text, effectiveCompany, "tex")} />
+                          <button
+                            type="submit"
+                            className="px-2 py-1 text-[11px] font-bold rounded-lg bg-amber-500/20 text-amber-200 border border-amber-500/40 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                          >
+                            🚀 Open in Overleaf
+                          </button>
+                        </form>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCompileError(null);
+                            downloadCompiledLatexPDF(improvedLatex || previousLatex || generateATSLatex(text));
+                          }}
+                          className="px-2 py-1 text-[11px] font-bold rounded-lg bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 hover:text-white transition-colors cursor-pointer"
+                        >
+                          🔄 Retry
+                        </button>
+                      </div>
                     </div>
                     {compileError.log && (
                       <details className="mt-1">

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCandidateFilename } from "@/lib/ats/tailor";
+import { getCandidateFilename, generateATSLatex } from "@/lib/ats/tailor";
 import {
   ensureAllHrefsPreservedInLatex,
   extractHyperlinksFromLatex,
@@ -18,7 +18,9 @@ export async function POST(req: NextRequest) {
     }
 
     const linkSources = [body?.originalLatex, body?.resumeText, body?.markdownText].filter(Boolean) as string[];
-    const latexCode = ensureAllHrefsPreservedInLatex(rawLatexCode, linkSources);
+    let latexCode = ensureAllHrefsPreservedInLatex(rawLatexCode, linkSources);
+    // Ensure pdfgentounicode is safely guarded for engines like XeTeX
+    latexCode = latexCode.replace(/\\pdfgentounicode\s*=\s*1/g, "\\ifdefined\\pdfgentounicode \\pdfgentounicode=1 \\fi");
 
     const downloadFilename =
       body?.filename ||
@@ -35,35 +37,60 @@ export async function POST(req: NextRequest) {
 
       return fetch("https://texlive.net/cgi-bin/latexcgi", {
         method: "POST",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
         body: formData,
-        signal: AbortSignal.timeout(30000), // 30 sec timeout
+        signal: AbortSignal.timeout(8000), // 8 sec timeout per attempt
       });
     }
 
     // First attempt with pdflatex
-    let response = await compile("pdflatex", latexCode);
-    let contentType = response.headers.get("content-type") || "";
+    let response = await compile("pdflatex", latexCode).catch(() => null);
+    let contentType = response ? (response.headers.get("content-type") || "") : "";
 
-    // If pdflatex didn't return PDF or returned an error, attempt secondary fallback with xelatex
-    if (!response.ok || !contentType.includes("pdf")) {
-      const firstErrText = await response.text().catch(() => "");
+    // If pdflatex didn't return PDF or failed, attempt secondary fallback with xelatex
+    if (!response || !response.ok || !contentType.includes("pdf")) {
+      const firstErrText = response ? await response.text().catch(() => "") : "pdflatex compilation failed";
       console.warn("pdflatex failed, trying secondary fallback with xelatex...");
-      
+
       const fallbackResponse = await compile("xelatex", latexCode).catch(() => null);
       if (fallbackResponse && fallbackResponse.ok && (fallbackResponse.headers.get("content-type") || "").includes("pdf")) {
         response = fallbackResponse;
         contentType = fallbackResponse.headers.get("content-type") || "";
       } else {
         const secondErrText = fallbackResponse ? await fallbackResponse.text().catch(() => "") : "";
-        const logSnippet = (secondErrText || firstErrText || "LaTeX compilation syntax error").slice(0, 1500);
-        return NextResponse.json(
-          {
-            error: "LaTeX compilation syntax warning",
-            log: logSnippet,
-            suggestion: "Custom font or package conflict detected. You can open and compile directly in Overleaf with full package resolution.",
-          },
-          { status: 422 }
-        );
+
+        // Tertiary fallback: compile clean standardized ATS LaTeX template from resumeText
+        const resumeContent = body?.resumeText || body?.markdownText;
+        let stdSuccess = false;
+        if (resumeContent && typeof resumeContent === "string" && resumeContent.trim()) {
+          console.warn("Custom LaTeX failed to compile; attempting standard ATS template compilation fallback...");
+          try {
+            const standardLatex = generateATSLatex(resumeContent, { originalLatex: body?.originalLatex });
+            const safeStandardLatex = ensureAllHrefsPreservedInLatex(standardLatex, linkSources);
+            const stdRes = await compile("pdflatex", safeStandardLatex).catch(() => null);
+            if (stdRes && stdRes.ok && (stdRes.headers.get("content-type") || "").includes("pdf")) {
+              response = stdRes;
+              contentType = stdRes.headers.get("content-type") || "";
+              stdSuccess = true;
+            }
+          } catch (stdErr) {
+            console.warn("Standard template fallback compilation error:", stdErr);
+          }
+        }
+
+        if (!stdSuccess && (!response || !response.ok || !contentType.includes("pdf"))) {
+          const logSnippet = (secondErrText || firstErrText || "LaTeX compilation syntax error").slice(0, 1500);
+          return NextResponse.json(
+            {
+              error: "LaTeX compilation syntax warning",
+              log: logSnippet,
+              suggestion: "Custom font or package conflict detected. You can open and compile directly in Overleaf with full package resolution or download the ATS Plain PDF.",
+            },
+            { status: 422 }
+          );
+        }
       }
     }
 
