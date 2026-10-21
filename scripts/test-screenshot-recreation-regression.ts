@@ -238,6 +238,177 @@ University of California, Berkeley | B.S. in Computer Science, Magna Cum Laude |
   }
   console.log(`✅ [PASS] All ${items.length} bullet items are formatted as cohesive, unbroken logical units!\n`);
 
+  // -------------------------------------------------------------------------
+  // Test 6: LinkedIn & GitHub Handles with Underscores and Prefix Formats
+  // -------------------------------------------------------------------------
+  console.log("--- Test 6: Underscore & Hyphen Handles with Various Prefix Formats ---");
+  const markdownWithUnderscores = `Alex Mercer
+alex.mercer@gmail.com | LinkedIn: in/alex_mercer_99 | GitHub: git/alex_mercer | 555-019-2834
+
+PROFESSIONAL SUMMARY
+Senior Distributed Systems Architect with expertise in eBPF and high-throughput kernel bypass.
+
+TECHNICAL SKILLS
+• Languages: C++, Rust, Go
+
+WORK EXPERIENCE
+Apex Cyber | Staff Systems Engineer | 03/2021 - Present | Seattle, WA
+• Optimized zero-copy network sockets.
+`;
+
+  const latexWithUnderscores = generateATSLatex(markdownWithUnderscores);
+  // Verify that alex_mercer_99 and alex_mercer are converted to valid \href
+  assert(
+    latexWithUnderscores.includes("href{https://linkedin.com/in/alex_mercer_99}"),
+    "Must preserve LinkedIn URL with underscore handle"
+  );
+  assert(
+    latexWithUnderscores.includes("href{https://github.com/alex_mercer}"),
+    "Must preserve GitHub URL with underscore handle"
+  );
+  // Underscores in the LaTeX text must be safely escaped
+  assert(
+    latexWithUnderscores.includes("alex\\_mercer"),
+    "Underscore in label must be safely escaped in LaTeX"
+  );
+  console.log("✅ [PASS] Handles with underscores correctly preserved as clickable links!\n");
+
+  // -------------------------------------------------------------------------
+  // Test 7: 3-Line Experience Entries (Org/Loc, Role, Date)
+  // -------------------------------------------------------------------------
+  console.log("--- Test 7: 3-Line Experience Entry Recognition (Org/Loc, Role, Date) ---");
+  const markdown3LineExp = `John Connor
+john@resistance.org | 555-010-9999
+
+WORK EXPERIENCE
+Cyberdyne Technologies, Los Angeles, CA
+Principal Infrastructure Engineer
+Jan. 2020 to Present
+• Directed migration of monolithic kernel to microservices.
+• Enforced cryptographic verification across all CI/CD pipelines.
+`;
+
+  const latex3LineExp = generateATSLatex(markdown3LineExp);
+  assert(
+    latex3LineExp.includes("\\resumeSubheading\n  {Cyberdyne Technologies}{Los Angeles, CA}\n  {Principal Infrastructure Engineer}{Jan. 2020 -- Present}"),
+    "Must assemble 3-line experience entry into single cohesive \\resumeSubheading"
+  );
+  console.log("✅ [PASS] 3-line experience entry successfully structured into \\resumeSubheading!\n");
+
+  // -------------------------------------------------------------------------
+  // Test 8: Projects with Date and External Links in Right Column
+  // -------------------------------------------------------------------------
+  console.log("--- Test 8: Project Date and Link Positioning in Right Column ---");
+  const markdownProjects = `Sarah Connor
+sarah@example.com
+
+PROJECTS
+KubeShield | Go, eBPF | [Code](https://github.com/sarah/kubeshield) | 2024 – 2025
+• Built eBPF-based container security runtime.
+`;
+
+  const latexProjects = generateATSLatex(markdownProjects);
+  assert(
+    latexProjects.includes("\\resumeProjectHeading"),
+    "Must emit \\resumeProjectHeading for project"
+  );
+  assert(
+    latexProjects.includes("href{https://github.com/sarah/kubeshield}"),
+    "Project link must be preserved in LaTeX"
+  );
+  assert(
+    latexProjects.includes("2024 -- 2025"),
+    "Project date range must be formatted in heading"
+  );
+  // Ensure dummy "\textit{Project}" is eliminated when real link/date exists
+  assert(
+    !latexProjects.includes("\\textit{Project}"),
+    "Must eliminate dummy '\\textit{Project}' string when real link or date exists"
+  );
+  console.log("✅ [PASS] Projects properly position links and dates in right column without dummy text!\n");
+
+  // -------------------------------------------------------------------------
+  // Test 9: Unicode Bullets & Soft Hyphen Cleaning
+  // -------------------------------------------------------------------------
+  console.log("--- Test 9: Unicode Bullet Glyphs and Soft Hyphen Normalization ---");
+  const markdownUnicodeBullets = `Elena Rostova
+elena@example.com
+
+TECHNICAL SKILLS
+✔ Systems: Linux Kernel, KVM, QEMU
+◆ Cloud: AWS, GCP, Azure
+► Observability: Prometheus, Grafana
+
+WORK EXPERIENCE
+TechCorp | Engineer | 2022 – Present | Austin, TX
+⁃ Engineered dis\u00ADtributed storage cluster.
+∙ Reduced query la\u2010tency by 40%.
+`;
+
+  const latexUnicode = generateATSLatex(markdownUnicodeBullets);
+  assert(
+    latexUnicode.includes("Systems:") && latexUnicode.includes("Linux Kernel"),
+    "Must parse unicode checkmark as skill category"
+  );
+  assert(
+    latexUnicode.includes("Cloud:") && latexUnicode.includes("AWS"),
+    "Must parse diamond bullet as skill category"
+  );
+  assert(
+    latexUnicode.includes("distributed storage cluster"),
+    "Soft hyphen in 'distributed' must be cleanly rejoined"
+  );
+  assert(
+    latexUnicode.includes("latency by 40%"),
+    "Unicode hyphen in 'latency' must be cleanly rejoined"
+  );
+  console.log("✅ [PASS] All unicode bullets and soft hyphens cleanly normalized!\n");
+
+  // -------------------------------------------------------------------------
+  // Test 10: Summary Narrative Sentence Not Swallowed as Contact Info
+  // -------------------------------------------------------------------------
+  console.log("--- Test 10: Summary Sentence Preservation in Header Area ---");
+  const markdownSummaryNearTop = `Morgan Freeman
+morgan@example.com | 555-234-5678
+Accomplished distributed systems engineer with deep passion for distributed databases and consensus.
+
+PROFESSIONAL SUMMARY
+Accomplished distributed systems engineer with deep passion for distributed databases and consensus.
+
+WORK EXPERIENCE
+Apex | Lead Architect | 2021 – Present
+• Designed consensus engine.
+`;
+
+  const latexSummaryNearTop = generateATSLatex(markdownSummaryNearTop);
+  // The narrative sentence should NOT appear in the candidate center header
+  const headerCenterMatch = latexSummaryNearTop.match(/\\begin\{center\}([\s\S]*?)\\end\{center\}/);
+  const headerCenter = headerCenterMatch ? headerCenterMatch[1] : "";
+  assert(
+    !headerCenter.includes("Accomplished distributed systems engineer"),
+    "Narrative sentence must not be swallowed into contact line"
+  );
+  console.log("✅ [PASS] Narrative sentences are correctly preserved and not jammed into contact info!\n");
+
+  // -------------------------------------------------------------------------
+  // Test 11: Email Attachment Parity
+  // -------------------------------------------------------------------------
+  console.log("--- Test 11: Recreated PDF Email Attachment Parity ---");
+  const recreatedCompiledPdf = await compileLatexToPdfBuffer(screenshotRecreatedLatex);
+  assert(recreatedCompiledPdf !== null && recreatedCompiledPdf.length > 5000);
+
+  // Validate that the email attachment buffer is a genuine PDF
+  const pdfHeader = recreatedCompiledPdf.slice(0, 5).toString("utf-8");
+  assert.strictEqual(pdfHeader, "%PDF-", "Email attachment buffer must start with %PDF- magic bytes");
+
+  // Validate that email attachment preserves all hyperlinks
+  const emailPdfValidation = await validatePdfHyperlinks(recreatedCompiledPdf, expectedUrls);
+  assert(
+    emailPdfValidation.valid,
+    `Email attachment PDF is missing clickable hyperlinks: ${emailPdfValidation.missingUrls.join(", ")}`
+  );
+  console.log(`✅ [PASS] Email attachment is a valid PDF (${recreatedCompiledPdf.length} bytes) with 100% clickable hyperlinks!\n`);
+
   console.log("==================================================================");
   console.log("🎉 ALL SCREENSHOT RECREATION & ATS PARITY TESTS PASSED!");
   console.log("==================================================================\n");

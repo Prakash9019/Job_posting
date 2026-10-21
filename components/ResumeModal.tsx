@@ -61,15 +61,17 @@ export default function ResumeModal({
   if (!isOpen) return null;
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
 
     try {
       setIsUploading(true);
       setError(null);
 
       const formData = new FormData();
-      formData.append("file", file);
+      for (let i = 0; i < fileList.length; i++) {
+        formData.append("files", fileList[i]);
+      }
       formData.append("isActive", "true");
 
       const res = await fetch("/api/resumes", {
@@ -221,15 +223,16 @@ export default function ResumeModal({
             <input
               id="file-input-resume"
               type="file"
+              multiple
               ref={fileInputRef}
               onChange={handleFileUpload}
-              accept="application/pdf,text/plain,.tex,application/x-tex,text/x-tex"
+              accept="application/pdf,image/png,image/jpeg,image/webp,image/*,text/plain,.tex,application/x-tex,text/x-tex"
               className="hidden"
             />
             {isUploading ? (
               <div className="flex flex-col items-center justify-center py-2">
                 <Loader2 className="w-6 h-6 animate-spin text-indigo-400 mb-2" />
-                <span className="text-xs text-slate-300 font-medium">Extracting resume text and saving...</span>
+                <span className="text-xs text-slate-300 font-medium">Processing resume and generating PDF...</span>
               </div>
             ) : (
               <div className="flex items-center justify-center gap-3">
@@ -237,8 +240,8 @@ export default function ResumeModal({
                   <Upload className="w-5 h-5" />
                 </div>
                 <div className="text-left">
-                  <p className="text-xs font-semibold text-white">Upload New PDF Resume</p>
-                  <p className="text-[11px] text-slate-400">PDF or TXT up to 3 MB. Review the extracted text before applying.</p>
+                  <p className="text-xs font-semibold text-white">Upload Resume (PDF, LaTeX, or Screenshots)</p>
+                  <p className="text-[11px] text-slate-400">PDF, TeX, or multiple screenshot pages. Image screenshots are automatically recreated into clean ATS PDFs.</p>
                 </div>
               </div>
             )}

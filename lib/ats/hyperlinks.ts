@@ -198,9 +198,11 @@ export function extractHyperlinksFromMarkdownText(text: string): ExtractedHyperl
   }
 
   // 3. Naked LinkedIn URLs/handles
-  const linkedinPattern = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_.-]+)\/?/gi;
+  const linkedinPattern = /(?:(?:LinkedIn|in)\s*[:|–—-]?\s*)?(?:https?:\/\/)?(?:www\.)?linkedin\.com\/(?:in|pub)\/([a-zA-Z0-9_.-]+)\/?|\b(?:in|linkedin)\/([a-zA-Z0-9_.-]{3,50})\b/gi;
   while ((match = linkedinPattern.exec(text)) !== null) {
-    const handle = match[1].replace(/[.,;:)>\]/]+$/, "");
+    const rawHandle = match[1] || match[2];
+    if (!rawHandle || /^(?:com|org|net|html|php)$/i.test(rawHandle)) continue;
+    const handle = rawHandle.replace(/[.,;:)>\]/]+$/, "");
     const url = `https://linkedin.com/in/${handle}`;
     const norm = normalizeUrl(url);
     if (!seenUrls.has(norm)) {
@@ -215,9 +217,11 @@ export function extractHyperlinksFromMarkdownText(text: string): ExtractedHyperl
   }
 
   // 4. Naked GitHub URLs/handles
-  const githubPattern = /(?:https?:\/\/)?(?:www\.)?github\.com\/([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)/gi;
+  const githubPattern = /(?:(?:GitHub|git)\s*[:|–—-]?\s*)?(?:https?:\/\/)?(?:www\.)?github\.com\/([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)\/?|\b(?:git|github)\/([a-zA-Z0-9_.-]{3,50}(?:\/[a-zA-Z0-9_.-]+)?)\b/gi;
   while ((match = githubPattern.exec(text)) !== null) {
-    const fullPath = match[1].replace(/[.,;:)>\]]+$/, "");
+    const rawPath = match[1] || match[2];
+    if (!rawPath || /^(?:com|org|net|html|php)$/i.test(rawPath)) continue;
+    const fullPath = rawPath.replace(/[.,;:)>\]/]+$/, "");
     const isRepo = fullPath.includes("/");
     const url = `https://github.com/${fullPath}`;
     const norm = normalizeUrl(url);
@@ -546,8 +550,9 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
       seenAnchors.add(anchorNorm);
 
       const escapedAnchor = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = escapedAnchor.replace(/_/g, "(?:\\\\_|_|-|\\s*)");
       // Must not match inside a URL or path segment
-      const wordRegex = new RegExp(`(?<![/.\w])\\b${escapedAnchor}\\b(?![/.\w])`, "i");
+      const wordRegex = new RegExp(`(?<![/a-zA-Z0-9])${pattern}(?![/a-zA-Z0-9])`, "i");
       if (wordRegex.test(cleanLine)) {
         cleanLine = cleanLine.replace(wordRegex, () => {
           const id = tokens.length;
@@ -777,7 +782,8 @@ export function ensureAllHrefsPreservedInLatex(
           let replaced = false;
           for (const cand of anchorCandidates) {
             const escaped = cand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            const re = new RegExp(`(?<![/.\w])\\b${escaped}\\b(?![/.\w])`, "i");
+            const pattern = escaped.replace(/_/g, "(?:\\\\_|_|-|\\s*)");
+            const re = new RegExp(`(?<![/a-zA-Z0-9])${pattern}(?![/a-zA-Z0-9])`, "i");
             if (re.test(modifiedHeader)) {
               const id = tokens.length;
               tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);
@@ -845,7 +851,8 @@ export function ensureAllHrefsPreservedInLatex(
             let replaced = false;
             for (const cand of anchorCandidates) {
               const escaped = cand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              const re = new RegExp(`(?<![/.\w])\\b${escaped}\\b(?![/.\w])`, "i");
+              const pattern = escaped.replace(/_/g, "(?:\\\\_|_|-|\\s*)");
+              const re = new RegExp(`(?<![/a-zA-Z0-9])${pattern}(?![/a-zA-Z0-9])`, "i");
               if (re.test(modifiedHeader)) {
                 const id = tokens.length;
                 tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);

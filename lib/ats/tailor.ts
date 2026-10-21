@@ -155,8 +155,13 @@ export function generateATSLatex(
     return true;
   });
 
-  const bulletRe = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+]|\d+[.)])\s+(.*)$/i;
-  const dateRangeRe = /\b((?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4})\s*[-–—]\s*(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4}|Present|Current))\b/i;
+  const bulletRe = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+✔✓◆◇►▸⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]|\d+[.)])\s+(.*)$/i;
+  const monthNames = "(?:Jan(?:uary|\\.)?|Feb(?:ruary|\\.)?|Mar(?:ch|\\.)?|Apr(?:il|\\.)?|May|Jun(?:e|\\.)?|Jul(?:y|\\.)?|Aug(?:ust|\\.)?|Sep(?:tember|t\\.)?|Oct(?:ober|\\.)?|Nov(?:ember|\\.)?|Dec(?:ember|\\.)?)";
+  const dateUnit = `(?:${monthNames}\\s+\\d{4}|\\d{1,2}\\/\\d{4}|\\d{4})`;
+  const dateRangeRe = new RegExp(
+    `\\b(${dateUnit}\\s*(?:[-–—]|\\bto\\b)\\s*(?:${dateUnit}|Present|Current|Now))\\b`,
+    "i"
+  );
 
   let candidateName = "";
   const contactTokens: string[] = [];
@@ -194,7 +199,13 @@ export function generateATSLatex(
         candidateName = line.replace(/^[#*\-•>\s]+/, "").trim();
         continue;
       }
-      const looksLikeContact = /[@|]|github|linkedin|\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/i.test(line) || (line.length < 80 && i <= 3);
+      const hasContactSignal =
+        /[@|]|github|linkedin|portfolio|website|\b\d{3}[-.]?\d{3}[-.]?\d{4}\b|\b\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/i.test(line);
+      const isLocationOrCityState =
+        /^[A-Za-z\s.-]+,\s*[A-Z]{2}(?:\s+\d{5})?$/.test(line) ||
+        /^[A-Za-z\s.-]+,\s*[A-Za-z\s.-]+$/.test(line);
+      const looksLikeContact = hasContactSignal || (isLocationOrCityState && line.length < 50);
+
       if (looksLikeContact) {
         const parts = transformPlainTextPreservingHrefs(line, (plain) =>
           plain.replace(/[|•–—\t]+/g, "\u0000")
@@ -236,7 +247,7 @@ export function generateATSLatex(
       }
 
       if (!inItemize) {
-        bodyLatex += "\\begin{itemize}\n";
+        bodyLatex += "\\nopagebreak[4]\n\\begin{itemize}\n";
         inItemize = true;
       }
       bodyLatex += `  \\resumeItem{${formatLatexLine(bulletContent, allKnownLinks)}}\n`;
@@ -272,7 +283,7 @@ export function generateATSLatex(
       if (line.includes("|") && dateMatch) {
         const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
         const dateIdx = parts.findIndex((p) => dateRangeRe.test(p));
-        const dateStr = dateMatch[0].replace(/\s*[-–—]\s*/, " -- ");
+        const dateStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
         const nonDateParts = parts.filter((_, idx) => idx !== dateIdx);
 
         let org = "";
@@ -347,7 +358,7 @@ export function generateATSLatex(
       // Pattern B: CURRENT line has date (e.g. "Platform Engineer April 2026 – September 2026")
       // and NEXT line is company/location (e.g. "JulleyOnline Private Limited India")
       if (dateMatch) {
-        const dateStr = dateMatch[0].replace(/\s*[-–—]\s*/, " -- ");
+        const dateStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
         const lineRemaining = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
 
         if (nextLine && !isNextBulletOrHeading(nextLine) && !nextDateMatch && nextLine.length < 90) {
@@ -374,7 +385,7 @@ export function generateATSLatex(
 
       // Pattern C: CURRENT line does NOT have date, but NEXT line has date
       if (!dateMatch && nextDateMatch && !line.endsWith(".") && line.length < 80 && /^[A-Z]/.test(line)) {
-        const nextDateStr = nextDateMatch[0].replace(/\s*[-–—]\s*/, " -- ");
+        const nextDateStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
         const nextRemaining = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
 
         const { org, loc } = parseOrgAndLoc(line);
@@ -386,6 +397,30 @@ export function generateATSLatex(
           bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(nextRemaining || org, allKnownLinks)}}{${formatLatexLine(nextDateStr, allKnownLinks)}}\n`;
         }
         i++;
+        continue;
+      }
+
+      // Pattern D: 3-line entry: Line i (Org/Loc), Line i+1 (Role), Line i+2 (Date)
+      const lineAfterNext = i + 2 < cleanLines.length ? cleanLines[i + 2].trim() : "";
+      const lineAfterNextDateMatch = lineAfterNext ? lineAfterNext.match(dateRangeRe) : null;
+      if (
+        !dateMatch &&
+        !nextDateMatch &&
+        lineAfterNextDateMatch &&
+        !line.endsWith(".") &&
+        line.length < 90 &&
+        nextLine.length < 90 &&
+        !isNextBulletOrHeading(nextLine)
+      ) {
+        const afterNextDateStr = lineAfterNextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        if (isRoleSegment(line) && !isRoleSegment(nextLine)) {
+          const orgLoc = parseOrgAndLoc(nextLine);
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(orgLoc.org || "Company", allKnownLinks)}}{${formatLatexLine(orgLoc.loc, allKnownLinks)}}\n  {${formatLatexLine(line, allKnownLinks)}}{${formatLatexLine(afterNextDateStr, allKnownLinks)}}\n`;
+        } else {
+          const { org, loc } = parseOrgAndLoc(line);
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org || "Company", allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(nextLine, allKnownLinks)}}{${formatLatexLine(afterNextDateStr, allKnownLinks)}}\n`;
+        }
+        i += 2;
         continue;
       }
     }
@@ -415,12 +450,21 @@ export function generateATSLatex(
         }
       }
 
+      let projDateStr = "";
+      const pDateMatch = cleanProjLine.match(dateRangeRe) || cleanProjLine.match(/\b(20\d{2}|19\d{2})\b/);
+      if (pDateMatch) {
+        projDateStr = pDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        cleanProjLine = cleanProjLine.replace(pDateMatch[0], "");
+      }
+
       const cleanTitle = cleanProjLine
         .replace(/\b(code|live demo|demo|live)\b/gi, "")
         .replace(/^[|–—\s]+|[|–—\s]+$/g, "")
         .trim();
 
-      const rightCol = projectHrefs.length > 0 ? projectHrefs.join(" \\enspace\\textbar\\enspace ") : "\\textit{Project}";
+      const rightParts = [...projectHrefs];
+      if (projDateStr) rightParts.push(projDateStr);
+      const rightCol = rightParts.length > 0 ? rightParts.join(" \\enspace\\textbar\\enspace ") : "";
 
       // Check if project line already has pipe/dash separator with tech stack
       if (cleanTitle.includes("|") || cleanTitle.includes(" — ") || cleanTitle.includes(" - ")) {
@@ -544,7 +588,7 @@ ${itemizeSetting}
   {\\LARGE \\scshape \\textbf{${escapeLatex(candidateName || "Candidate Name")}}} \\\\[2pt]
   \\small ${formattedContacts}
 \\end{center}
-\\vspace{-3pt}
+\\vspace{-8pt}
 
 %----------BODY SECTIONS----------
 ${bodyLatex}

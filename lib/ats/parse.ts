@@ -123,6 +123,96 @@ Your task is to transcribe this resume screenshot or document with MAXIMUM struc
   return text;
 }
 
+export async function transcribeMultipleDocumentsWithAI(
+  items: { buffer: Buffer; mimeType: string }[],
+  isJobDescription = false
+): Promise<string> {
+  if (items.length === 0) return "";
+  if (items.length === 1) return transcribeDocumentWithAI(items[0].buffer, items[0].mimeType, isJobDescription);
+
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("Configure GEMINI_API_KEY in .env to transcribe document screenshots.");
+  }
+
+  const candidateModels = Array.from(
+    new Set(
+      [
+        process.env.GEMINI_EXTRACTION_MODEL,
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+      ].filter(Boolean)
+    )
+  ) as string[];
+
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  let text = "";
+  let lastError: Error | null = null;
+
+  const prompt = isJobDescription
+    ? `These images represent sequential sections of a job posting or screenshot. Transcribe verbatim as plain text, keeping headings and line breaks in sequential order. No commentary or markdown fences.`
+    : `You are an expert Document Intelligence and Resume Transcription Specialist.
+These images represent sequential pages/sections of a multi-page resume.
+Your task is to transcribe ALL pages sequentially with MAXIMUM structural fidelity into a single coherent, structured Markdown resume.
+
+=== CRITICAL HYPERLINK PRESERVATION RULES ===
+1. Extract and preserve EVERY visible URL, email, LinkedIn profile, GitHub profile, portfolio, and project link as a Markdown link [Label](URL).
+   - Email: format as [user@example.com](mailto:user@example.com)
+   - LinkedIn: format as [LinkedIn](https://linkedin.com/in/username) or [linkedin.com/in/username](https://linkedin.com/in/username)
+   - GitHub: format as [GitHub](https://github.com/username) or [github.com/username](https://github.com/username)
+   - Portfolio / Website: format as [Portfolio](https://domain.com) or [domain.com](https://domain.com)
+   - Project links (Code, Live Demo): format as [Code](https://github.com/...) and [Live Demo](https://...)
+2. If an icon (GitHub, LinkedIn, Email, Globe/Link) appears next to a handle or address, reconstruct the full valid https:// or mailto: URL into the link.
+3. NEVER invent or hallucinate missing URLs. If no URL or username is visible, keep the text without fake links.
+
+=== CRITICAL FORMATTING & SPACING RULES ===
+1. PRESERVE HEADINGS: Keep all major section headings in uppercase (e.g., PROFESSIONAL SUMMARY, WORK EXPERIENCE, PROJECTS, TECHNICAL SKILLS, EDUCATION, CERTIFICATIONS, ACHIEVEMENTS).
+2. SINGLE-LINE BULLET POINTS: Do NOT insert manual line breaks inside bullet points or sentences. Each bullet point MUST be a single, complete logical line starting with "• " or "- ". Allow text to wrap naturally.
+3. REJOIN HYPHENATED WORDS: If a word was broken across pages or lines with a hyphen (e.g. "distrib-" and "uted"), rejoin it as a single word ("distributed").
+4. PRESERVE STRUCTURE & ALIGNMENT:
+   - Header: Candidate Name on line 1, contact info on line 2 separated by " | " (pipes).
+   - Experience entries: "Job Title | Company Name | Location | Date" followed by single-line bullet points.
+   - Project entries: "Project Title | Tech Stack | [Code](url) | [Live Demo](url) | Date" followed by single-line bullet points.
+   - Skills entries: "Category: Skill 1, Skill 2, Skill 3"
+5. Do NOT include markdown code fences (no \`\`\`markdown or \`\`\`). Return clean text only without commentary.`;
+
+  for (const model of candidateModels) {
+    try {
+      const parts = [
+        ...items.map((it) => ({
+          inlineData: {
+            data: it.buffer.toString("base64"),
+            mimeType: it.mimeType || "image/png",
+          },
+        })),
+        { text: prompt },
+      ];
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: "user", parts }],
+        config: { temperature: 0, maxOutputTokens: 12000 },
+      });
+      text = response.text?.trim() || "";
+      text = text.replace(/^```(?:markdown|text)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+      if (text.length >= 50) break;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`Multi-screenshot resume transcription failed with model ${model}, trying next:`, lastError.message);
+    }
+  }
+
+  if (text.length < 50) {
+    throw new Error(
+      lastError
+        ? `Multi-screenshot transcription error: ${lastError.message}`
+        : "Not enough readable text found in uploaded screenshots. Upload clearer screenshots or paste the text."
+    );
+  }
+
+  return text;
+}
+
 export async function parseATSFile(
   file: File,
   imagesOnly = false

@@ -112,9 +112,9 @@ function parseDatePoint(str: string): Date | null {
  */
 export function cleanSmartTypography(text: string): string {
   return text
-    .replace(/[\u2014\u2013]/g, "-")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2018\u2019]/g, "'");
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u00AD\uFE63\uFF0D]/g, "-")
+    .replace(/[\u201C\u201D\u00AB\u00BB]/g, '"')
+    .replace(/[\u2018\u2019\u201A\u201B`]/g, "'");
 }
 
 /**
@@ -125,12 +125,12 @@ export function cleanSmartTypography(text: string): string {
 export function normalizeWrappedBullets(rawText: string): string {
   if (!rawText) return "";
 
-  // 1. Clean smart quotes, dashes, and malformed dollar-pipe sequences
+  // 1. Clean smart quotes, dashes, soft hyphens, and malformed dollar-pipe sequences
   const cleaned = rawText
     .replace(/\r\n?/g, "\n")
-    .replace(/[\u2014\u2013]/g, "-")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u00AD\uFE63\uFF0D]/g, "-")
+    .replace(/[\u201C\u201D\u00AB\u00BB]/g, '"')
+    .replace(/[\u2018\u2019\u201A\u201B`]/g, "'")
     .replace(/\$?\s*\|\s*\$?|(?<=\s)\|\s*(?=\s)/g, " | ");
 
   const rawLines = cleaned.split("\n");
@@ -148,7 +148,7 @@ export function normalizeWrappedBullets(rawText: string): string {
     return true;
   });
 
-  const BULLET_START_RE = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+]|\d+[.)])\s+/;
+  const BULLET_START_RE = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+✔✓◆◇►▸⁃∙·]|\u2022|\u2023|\u25E6|\u2043|\u2219|\u25AA|\u25AB|\u25CF|\d+[.)])\s+/;
   const DATE_RE = /\b(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4})\s*[-–—]\s*(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4}|\d{4}|Present|Current)\b/i;
   const ROLE_RE = /\b(?:software|engineer|developer|intern|scientist|analyst|lead|manager|consultant|associate|architect|researcher|director|founder|co-founder|officer|specialist|assistant)\b/i;
   const LOCATION_RE = /\b(?:remote|hybrid|bangalore|bengaluru|hyderabad|visakhapatnam|mumbai|pune|delhi|mysuru|karnataka|india|usa|ca|ny)\b/i;
@@ -228,16 +228,19 @@ export function normalizeWrappedBullets(rawText: string): string {
         if (isRoleOrOrgHeader(nextTrimmed, afterLine)) break;
         if (/^[A-Za-z0-9/& -]{2,25}:\s+/.test(nextTrimmed) && !nextTrimmed.includes(",")) break;
 
-        const endsWithPunctuation = /[.!?]$/.test(mergedBullet.trim());
+        const isCommonAbbrev = /\b(?:e\.g|i\.e|etc|u\.s|inc|co|corp|vs|dr|mr|ms|prof|dept|approx|min|sec|no|v\d+)\.$/i.test(mergedBullet.trim());
+        const endsWithPunctuation = /[.!?]$/.test(mergedBullet.trim()) && !isCommonAbbrev;
         const endsWithOpenClause = /[,;:\-–—\(\[\{]|(?:\band|\bor|\bto|\bfor|\bwith|\bby|\bin|\bat|\bon|\busing|\bwhich|\bthat)\s*$/i.test(mergedBullet.trim());
         const nextStartsLower = /^[a-z]/.test(nextTrimmed);
         const nextIsContinuation = nextStartsLower || /^(?:and|or|to|for|with|by|in|at|on|using|which|that|reducing|improving|resulting|saving|increasing|scaling|delivering|achieving)\b/i.test(nextTrimmed);
 
-        if (endsWithPunctuation && !nextIsContinuation) {
+        // If an empty line separated the items and it doesn't clearly continue, break
+        if (hadEmpty && (!nextIsContinuation || endsWithPunctuation)) {
           break;
         }
 
-        if (hadEmpty && !nextIsContinuation) {
+        // If there was punctuation and next line has empty separator or looks like independent section, break
+        if (hadEmpty && endsWithPunctuation) {
           break;
         }
 

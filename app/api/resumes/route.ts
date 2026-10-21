@@ -3,6 +3,9 @@ import { prisma } from "@/lib/db/prisma";
 import { getStorageProvider } from "@/lib/storage";
 import { extractResumeText } from "@/lib/ai/resume";
 import { requireUser, AuthError } from "@/lib/auth/authorization";
+import { transcribeMultipleDocumentsWithAI } from "@/lib/ats/parse";
+import { normalizeWrappedBullets } from "@/lib/ats/scoring";
+import { generateATSLatex, compileLatexToPdfBuffer, getCandidateFilename } from "@/lib/ats/tailor";
 
 export async function GET(req: NextRequest) {
   try {
@@ -27,37 +30,85 @@ export async function POST(req: NextRequest) {
   try {
     const { userId } = requireUser(req);
     const formData = await req.formData();
-    const file = formData.get("file") as File | null;
+    const files = (formData.getAll("files") as File[]).filter((f) => f && f.size > 0);
+    if (files.length === 0) {
+      const single = formData.get("file") as File | null;
+      if (single && single.size > 0) files.push(single);
+    }
     const makeActive = formData.get("isActive") === "true";
 
-    if (!file) {
+    if (files.length === 0) {
       return NextResponse.json(
         { success: false, error: "No resume file provided" },
         { status: 400 }
       );
     }
 
-    // Max 15MB limit
-    if (file.size > 3 * 1024 * 1024) {
-      return NextResponse.json(
-        { success: false, error: "Resume file size exceeds 3 MB limit" },
-        { status: 400 }
-      );
+    for (const f of files) {
+      if (f.size > 3 * 1024 * 1024) {
+        return NextResponse.json(
+          { success: false, error: `Resume file "${f.name}" exceeds 3 MB limit` },
+          { status: 400 }
+        );
+      }
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const originalName = file.name || "resume.pdf";
-    const isTex = originalName.endsWith(".tex") || (file.type && file.type.includes("tex"));
-    const mimeType = isTex ? "application/x-tex" : (file.type || "application/pdf");
+    const storage = getStorageProvider();
+    let finalBuffer: Buffer;
+    let finalMimeType: string;
+    let finalFileName: string;
+    let extractedText = "";
 
-    // Extract text from resume
-    const extractedText = await extractResumeText(buffer, mimeType);
+    const allImages = files.every(
+      (f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp|heic)$/i.test(f.name)
+    );
+
+    if (allImages) {
+      const items: { buffer: Buffer; mimeType: string }[] = [];
+      for (const f of files) {
+        const ab = await f.arrayBuffer();
+        items.push({
+          buffer: Buffer.from(ab),
+          mimeType: f.type || "image/png",
+        });
+      }
+
+      // Transcribe sequentially across screenshots with full hyperlink and bullet preservation
+      const rawTranscribed = await transcribeMultipleDocumentsWithAI(items);
+      extractedText = normalizeWrappedBullets(rawTranscribed);
+
+      // Recreate into pristine ATS LaTeX
+      const recreatedLatex = generateATSLatex(extractedText);
+
+      // Compile LaTeX to genuine PDF artifact
+      const compiledPdf = await compileLatexToPdfBuffer(recreatedLatex);
+      if (compiledPdf && compiledPdf.length > 0) {
+        finalBuffer = compiledPdf;
+        finalMimeType = "application/pdf";
+        finalFileName = getCandidateFilename(extractedText, undefined, "pdf");
+      } else {
+        // Fallback to primary image buffer if compiler unavailable
+        finalBuffer = items[0].buffer;
+        finalMimeType = items[0].mimeType;
+        finalFileName = files[0].name || "resume.png";
+      }
+    } else {
+      const primaryFile = files[0];
+      const arrayBuffer = await primaryFile.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const originalName = primaryFile.name || "resume.pdf";
+      const isTex = originalName.endsWith(".tex") || (primaryFile.type && primaryFile.type.includes("tex"));
+      const mimeType = isTex ? "application/x-tex" : (primaryFile.type || "application/pdf");
+
+      extractedText = await extractResumeText(buffer, mimeType);
+      finalBuffer = buffer;
+      finalMimeType = mimeType;
+      finalFileName = originalName;
+    }
 
     // Save to private storage strictly partitioned by user
-    const storageKey = `resumes/${userId}/${Date.now()}-${originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const storage = getStorageProvider();
-    await storage.saveFile(storageKey, buffer, mimeType);
+    const storageKey = `resumes/${userId}/${Date.now()}-${finalFileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    await storage.saveFile(storageKey, finalBuffer, finalMimeType);
 
     // If making active or if no existing active resume, mark as active
     const existingActive = await prisma.resume.findFirst({
@@ -76,10 +127,10 @@ export async function POST(req: NextRequest) {
     const resume = await prisma.resume.create({
       data: {
         userId,
-        fileName: originalName,
+        fileName: finalFileName,
         filePath: storageKey,
-        fileSize: file.size,
-        mimeType,
+        fileSize: finalBuffer.length,
+        mimeType: finalMimeType,
         extractedText,
         isActive: shouldBeActive,
       },
