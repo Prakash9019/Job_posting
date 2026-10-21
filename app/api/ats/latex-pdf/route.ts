@@ -50,9 +50,12 @@ export async function POST(req: NextRequest) {
     let response = await compile("pdflatex", latexCode).catch(() => null);
     let contentType = response ? (response.headers.get("content-type") || "") : "";
 
+    let firstErrText = "";
+    let secondErrText = "";
+
     // If pdflatex didn't return PDF or failed, attempt secondary fallback with xelatex
     if (!response || !response.ok || !contentType.includes("pdf")) {
-      const firstErrText = response ? await response.text().catch(() => "") : "pdflatex compilation failed";
+      firstErrText = response ? await response.text().catch(() => "") : "pdflatex compilation failed";
       console.warn("pdflatex failed, trying secondary fallback with xelatex...");
 
       const fallbackResponse = await compile("xelatex", latexCode).catch(() => null);
@@ -60,11 +63,10 @@ export async function POST(req: NextRequest) {
         response = fallbackResponse;
         contentType = fallbackResponse.headers.get("content-type") || "";
       } else {
-        const secondErrText = fallbackResponse ? await fallbackResponse.text().catch(() => "") : "";
+        secondErrText = fallbackResponse ? await fallbackResponse.text().catch(() => "") : "";
 
         // Tertiary fallback: compile clean standardized ATS LaTeX template from resumeText
         const resumeContent = body?.resumeText || body?.markdownText;
-        let stdSuccess = false;
         if (resumeContent && typeof resumeContent === "string" && resumeContent.trim()) {
           console.warn("Custom LaTeX failed to compile; attempting standard ATS template compilation fallback...");
           try {
@@ -74,25 +76,33 @@ export async function POST(req: NextRequest) {
             if (stdRes && stdRes.ok && (stdRes.headers.get("content-type") || "").includes("pdf")) {
               response = stdRes;
               contentType = stdRes.headers.get("content-type") || "";
-              stdSuccess = true;
+            } else if (stdRes) {
+              const stdErrText = await stdRes.text().catch(() => "");
+              if (stdErrText) secondErrText = stdErrText;
             }
           } catch (stdErr) {
             console.warn("Standard template fallback compilation error:", stdErr);
           }
         }
-
-        if (!stdSuccess && (!response || !response.ok || !contentType.includes("pdf"))) {
-          const logSnippet = (secondErrText || firstErrText || "LaTeX compilation syntax error").slice(0, 3000);
-          return NextResponse.json(
-            {
-              error: "LaTeX compilation failed",
-              log: logSnippet,
-              suggestion: "Custom font or package conflict detected. You can inspect the compiler log below, download the .tex source, or open directly in Overleaf.",
-            },
-            { status: 422 }
-          );
-        }
       }
+    }
+
+    if (!response || !response.ok || !contentType.includes("pdf")) {
+      const logSnippet = (secondErrText || firstErrText || "LaTeX compilation failed to produce a valid PDF.").slice(0, 3000);
+      console.error("[LaTeX PDF Route] Compilation failed or produced invalid response:", {
+        hasResponse: !!response,
+        responseStatus: response?.status,
+        contentType,
+        errorSnippet: logSnippet.slice(0, 300),
+      });
+      return NextResponse.json(
+        {
+          error: "LaTeX compilation failed",
+          log: logSnippet,
+          suggestion: "Custom font or package conflict detected. You can inspect the compiler log below, download the .tex source, or open directly in Overleaf.",
+        },
+        { status: 422 }
+      );
     }
 
     const pdfArrayBuf = await response.arrayBuffer();
