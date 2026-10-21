@@ -5,7 +5,7 @@ import { extractResumeText } from "../lib/ai/resume";
 async function main() {
   const p1 = "E:/Job_posting/uploads/resumes/user_a/1792158353361-Resume_Loka_Surya_Prakash.pdf";
   const buf = fs.readFileSync(p1);
-  const parser = new PDFParse({ data: buf });
+  const parser: any = new PDFParse({ data: buf });
   await parser.load();
   console.log("Pages:", parser.doc.numPages);
   for (let i = 1; i <= parser.doc.numPages; i++) {

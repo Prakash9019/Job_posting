@@ -259,7 +259,7 @@ export async function extractHyperlinksFromPdf(pdfBuffer: Buffer): Promise<Extra
 
   try {
     const { PDFParse } = await import("pdf-parse");
-    const p = new PDFParse({ data: pdfBuffer });
+    const p: any = new PDFParse({ data: pdfBuffer });
     await p.load();
 
     const seenUrls = new Set<string>();
@@ -757,7 +757,7 @@ export async function validatePdfHyperlinks(
   }
 
   const { PDFParse } = await import("pdf-parse");
-  const p = new PDFParse({ data: pdfBuffer });
+  const p: any = new PDFParse({ data: pdfBuffer });
   await p.load();
 
   const foundUrls: string[] = [];

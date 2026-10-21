@@ -6,6 +6,7 @@ import {
   restoreMissingHyperlinksInLatex,
   ensureAllHrefsPreservedInLatex,
   validatePdfHyperlinks,
+  type ExtractedHyperlink,
 } from "./hyperlinks";
 
 export interface ApplyLatexParams {

@@ -16,7 +16,7 @@ async function main() {
   console.log(`PDF compiled successfully! Size: ${pdfBuffer.length} bytes`);
   fs.writeFileSync("E:/Job_posting/test_new_generated_resume.pdf", pdfBuffer);
 
-  const p = new PDFParse({ data: pdfBuffer });
+  const p: any = new PDFParse({ data: pdfBuffer });
   await p.load();
   console.log("Pages in compiled PDF:", p.doc.numPages);
   for (let i = 1; i <= p.doc.numPages; i++) {

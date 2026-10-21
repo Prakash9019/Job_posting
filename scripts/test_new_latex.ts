@@ -8,7 +8,6 @@ import {
   ensureAllHrefsPreservedInLatex,
   markdownLinkToLatexHref,
   transformPlainTextPreservingHrefs,
-  escapeLatex,
 } from "../lib/ats/hyperlinks";
 
 const CANONICAL_HEADINGS: [string, RegExp][] = [

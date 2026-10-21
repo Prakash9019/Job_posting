@@ -3,7 +3,7 @@ import { PDFParse } from "pdf-parse";
 
 async function main() {
   const buf = fs.readFileSync("E:/Job_posting/test_new_generated_resume.pdf");
-  const p = new PDFParse({ data: buf });
+  const p: any = new PDFParse({ data: buf });
   await p.load();
   console.log("Num pages:", p.doc.numPages);
   for (let i = 1; i <= p.doc.numPages; i++) {

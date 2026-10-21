@@ -3,7 +3,7 @@ import { PDFParse } from "pdf-parse";
 
 async function checkAnnots(path: string) {
   const buf = fs.readFileSync(path);
-  const p = new PDFParse({ data: buf });
+  const p: any = new PDFParse({ data: buf });
   await p.load();
   console.log("=== Pages in", path, ":", p.doc.numPages, "===");
   for (let i = 1; i <= p.doc.numPages; i++) {

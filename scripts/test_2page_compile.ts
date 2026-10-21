@@ -28,7 +28,7 @@ async function main() {
 
   fs.writeFileSync("E:/Job_posting/test_2page_resume.pdf", pdfBuffer);
 
-  const p = new PDFParse({ data: pdfBuffer });
+  const p: any = new PDFParse({ data: pdfBuffer });
   await p.load();
   console.log("Pages in 2-page compiled PDF:", p.doc.numPages);
   for (let i = 1; i <= p.doc.numPages; i++) {
