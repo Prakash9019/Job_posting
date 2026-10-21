@@ -50,7 +50,7 @@ export function cleanLatexMarkdownFences(text: string): string {
  */
 export async function validateAndCompileLatex(
   latexCode: string,
-  linkSource?: string | ExtractedHyperlink[]
+  linkSource?: string | string[] | ExtractedHyperlink[] | (string | ExtractedHyperlink[])[]
 ): Promise<{
   success: boolean;
   pdfBuffer: Buffer | null;
@@ -62,7 +62,19 @@ export async function validateAndCompileLatex(
   }
 
   // Ensure 100% of hyperlinks are preserved as clickable \href commands before compiling
-  const safeLatex = ensureAllHrefsPreservedInLatex(latexCode, linkSource ? [linkSource] : []);
+  let additionalSources: (string | ExtractedHyperlink[])[] = [];
+  if (linkSource) {
+    if (Array.isArray(linkSource)) {
+      if (linkSource.length > 0 && typeof linkSource[0] === "object" && linkSource[0] !== null && "url" in linkSource[0]) {
+        additionalSources = [linkSource as ExtractedHyperlink[]];
+      } else {
+        additionalSources = linkSource as (string | ExtractedHyperlink[])[];
+      }
+    } else {
+      additionalSources = [linkSource];
+    }
+  }
+  const safeLatex = ensureAllHrefsPreservedInLatex(latexCode, additionalSources);
 
   async function compileWithEngine(engine: string) {
     const formData = new FormData();
