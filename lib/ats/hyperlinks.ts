@@ -251,6 +251,26 @@ export function extractHyperlinksFromMarkdownText(text: string): ExtractedHyperl
   return links;
 }
 
+interface PdfAnnotationItem {
+  subtype?: string;
+  url?: string;
+  unsafeUrl?: string;
+  overlaidText?: string;
+}
+
+interface PdfDocWrapper {
+  numPages: number;
+  getPage: (page: number) => Promise<{
+    getAnnotations: (opt: { intent: string }) => Promise<PdfAnnotationItem[]>;
+  }>;
+}
+
+interface PdfParseInstance {
+  doc: PdfDocWrapper;
+  load: () => Promise<void>;
+  destroy: () => Promise<void>;
+}
+
 /**
  * Extracts clickable link annotations from a binary PDF buffer.
  */
@@ -260,7 +280,7 @@ export async function extractHyperlinksFromPdf(pdfBuffer: Buffer): Promise<Extra
 
   try {
     const { PDFParse } = await import("pdf-parse");
-    const p: any = new PDFParse({ data: pdfBuffer });
+    const p = new PDFParse({ data: pdfBuffer }) as unknown as PdfParseInstance;
     await p.load();
 
     const seenUrls = new Set<string>();
@@ -422,53 +442,38 @@ export function markdownLinkToLatexHref(label: string, url: string): string {
 /**
  * Safely escapes plain text for LaTeX while protecting existing \href commands
  * and converting markdown links [Label](URL) to clickable LaTeX \href.
+/**
+ * Safely escapes plain text for LaTeX while protecting existing \href commands
+ * and converting markdown links [Label](URL) to clickable LaTeX \href.
  */
 export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHyperlink[]): string {
-  let cleanLine = line.replace(/\\?\$[ \t]*\|[ \t]*\\?\$/g, " | ");
+  let cleanLine = line
+    .replace(/\\?\$[ \t]*\|[ \t]*\\?\$/g, " | ")
+    .replace(/^\s*(?:optimized|rewrite|par|improved|revised|bullet|option\s*\d+|suggestion)\s*[:\-–—]\s*/i, "")
+    .replace(/\s*\((?:note|instruction|placeholder|tip)\s*:[^)]*\)/gi, "")
+    .replace(/\s*\*(?:note|instruction|tip)\s*:[^*]*\*/gi, "")
+    .replace(/^#{1,6}\s+/, "");
 
   const tokens: string[] = [];
   const createdUrls = new Set<string>();
 
-  // 1. Tokenize existing \href commands
+  // 1. Tokenize existing \href and \url commands
   cleanLine = tokenizeExistingLatexHrefs(cleanLine, tokens, createdUrls);
 
-  // 2. Convert markdown links [Label](url)
+  // 2. Tokenize existing standard LaTeX formatting commands to prevent double-escaping
+  cleanLine = cleanLine.replace(/\\(?:textbf|textit|texttt|textsc|emph|underline|small|large|LARGE|Huge|scshape|bfseries|enspace\\textbar\\enspace)\b(?:\{[^{}]*\})?/g, (match) => {
+    const id = tokens.length;
+    tokens.push(match);
+    return `XATSTOKEN${id}X`;
+  });
+
+  // 3. Convert markdown links [Label](url)
   cleanLine = cleanLine.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
     const id = tokens.length;
     tokens.push(markdownLinkToLatexHref(label, url));
     addUrlToSet(createdUrls, url);
     return `XATSTOKEN${id}X`;
   });
-
-  // 3. Auto-link known anchor words if NOT emails and NOT URLs
-  if (knownLinks && knownLinks.length > 0) {
-    const seenAnchors = new Set<string>();
-    for (const link of knownLinks) {
-      if (!link.url || link.url.length < 5) continue;
-      const anchor = link.text.trim();
-      if (!anchor || anchor.length < 2) continue;
-      // Skip emails and naked URLs here; handled by dedicated regexes below
-      if (anchor.includes("@") || anchor.startsWith("http://") || anchor.startsWith("https://")) {
-        continue;
-      }
-      const anchorNorm = anchor.toLowerCase();
-      if (seenAnchors.has(anchorNorm) || hasUrlInSet(createdUrls, link.url)) {
-        continue;
-      }
-      seenAnchors.add(anchorNorm);
-
-      const escapedAnchor = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const wordRegex = new RegExp(`\\b${escapedAnchor}\\b`, "i");
-      if (wordRegex.test(cleanLine)) {
-        cleanLine = cleanLine.replace(wordRegex, () => {
-          const id = tokens.length;
-          tokens.push(markdownLinkToLatexHref(anchor, link.url));
-          addUrlToSet(createdUrls, link.url);
-          return `XATSTOKEN${id}X`;
-        });
-      }
-    }
-  }
 
   // 4. Auto-link naked emails
   cleanLine = cleanLine.replace(
@@ -482,9 +487,9 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
     }
   );
 
-  // 5. Auto-link naked LinkedIn
+  // 5. Auto-link naked LinkedIn URLs/handles
   cleanLine = cleanLine.replace(
-    /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_.-]+)\/?/gi,
+    /(?<![a-zA-Z0-9/])(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_.-]+)\/?/gi,
     (_, rawHandle) => {
       const handle = rawHandle.replace(/[.,;:)>\]/]+$/, "");
       const url = `https://linkedin.com/in/${handle}`;
@@ -495,9 +500,9 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
     }
   );
 
-  // 6. Auto-link naked GitHub
+  // 6. Auto-link naked GitHub URLs/handles
   cleanLine = cleanLine.replace(
-    /(?:https?:\/\/)?(?:www\.)?github\.com\/([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)/gi,
+    /(?<![a-zA-Z0-9/])(?:https?:\/\/)?(?:www\.)?github\.com\/([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)/gi,
     (_, path) => {
       const cleanPath = path.replace(/[.,;:)>\]/]+$/, "");
       const isRepo = cleanPath.includes("/");
@@ -522,7 +527,79 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
     }
   );
 
-  // 8. Escape LaTeX special characters in non-token parts only
+  // 8. Auto-link known anchor words if NOT emails and NOT URLs
+  // Crucially, this runs AFTER naked URLs are tokenized so it NEVER corrupts URL hostnames/paths!
+  if (knownLinks && knownLinks.length > 0) {
+    const seenAnchors = new Set<string>();
+    for (const link of knownLinks) {
+      if (!link.url || link.url.length < 5) continue;
+      const anchor = link.text.trim();
+      if (!anchor || anchor.length < 2) continue;
+      // Skip emails and naked URLs here; handled by dedicated regexes above
+      if (anchor.includes("@") || anchor.startsWith("http://") || anchor.startsWith("https://")) {
+        continue;
+      }
+      const anchorNorm = anchor.toLowerCase();
+      if (seenAnchors.has(anchorNorm) || hasUrlInSet(createdUrls, link.url)) {
+        continue;
+      }
+      seenAnchors.add(anchorNorm);
+
+      const escapedAnchor = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      // Must not match inside a URL or path segment
+      const wordRegex = new RegExp(`(?<![/.\w])\\b${escapedAnchor}\\b(?![/.\w])`, "i");
+      if (wordRegex.test(cleanLine)) {
+        cleanLine = cleanLine.replace(wordRegex, () => {
+          const id = tokens.length;
+          tokens.push(markdownLinkToLatexHref(anchor, link.url));
+          addUrlToSet(createdUrls, link.url);
+          return `XATSTOKEN${id}X`;
+        });
+      }
+    }
+  }
+
+  // 9. Convert Markdown bold, italic, and inline code in non-token text
+  // Bold: **text**
+  cleanLine = cleanLine.replace(/\*\*([^*\n]+?)\*\*/g, (_, inner) => {
+    const id = tokens.length;
+    tokens.push(`\\textbf{${escapeLatexLabel(inner)}}`);
+    return `XATSTOKEN${id}X`;
+  });
+  // Bold: __text__ (avoiding python dunders like __init__)
+  cleanLine = cleanLine.replace(/(?<=^|[ \t(])__([^_ \n\t][^_\n]*?[^_ \n\t])__(?=[ \t).,:;!?]|$)/g, (_, inner) => {
+    if (/^[a-zA-Z0-9]+$/.test(inner) && ["init", "main", "dict", "proto", "file", "name"].includes(inner.toLowerCase())) {
+      return `__${inner}__`;
+    }
+    const id = tokens.length;
+    tokens.push(`\\textbf{${escapeLatexLabel(inner)}}`);
+    return `XATSTOKEN${id}X`;
+  });
+
+  // Inline code: `code`
+  cleanLine = cleanLine.replace(/`([^`\n]+)`/g, (_, inner) => {
+    const id = tokens.length;
+    tokens.push(`\\texttt{${escapeLatexLabel(inner)}}`);
+    return `XATSTOKEN${id}X`;
+  });
+
+  // Italic: *text* (excluding bullet point markers or mathematical operations)
+  cleanLine = cleanLine.replace(/(?<=^|[ \t(])\*([^*\n\s](?:[^*\n]*?[^*\n\s])?)\*(?=[ \t).,:;!?]|$)/g, (_, inner) => {
+    const id = tokens.length;
+    tokens.push(`\\textit{${escapeLatexLabel(inner)}}`);
+    return `XATSTOKEN${id}X`;
+  });
+  // Italic: _text_ (excluding snake_case identifiers like user_id)
+  cleanLine = cleanLine.replace(/(?<=^|[ \t(])_([^_\n\s](?:[^_\n]*?[^_\n\s])?)_(?=[ \t).,:;!?]|$)/g, (_, inner) => {
+    if (inner.includes("_") || /^[a-zA-Z0-9]+$/.test(inner)) {
+      return `_${inner}_`;
+    }
+    const id = tokens.length;
+    tokens.push(`\\textit{${escapeLatexLabel(inner)}}`);
+    return `XATSTOKEN${id}X`;
+  });
+
+  // 10. Escape LaTeX special characters in non-token parts only
   const parts = cleanLine.split(/(XATSTOKEN\d+X)/g);
   const escapedParts = parts.map((part) => {
     if (/^XATSTOKEN\d+X$/.test(part)) {
@@ -533,6 +610,7 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
       .replace(/[%&$#_{}]/g, "\\$&")
       .replace(/~/g, "\\textasciitilde{}")
       .replace(/\^/g, "\\textasciicircum{}")
+      .replace(/[ \t]{2,}/g, " ")
       .replace(/\s+\|\s+/g, " \\enspace\\textbar\\enspace ");
   });
 
@@ -688,10 +766,18 @@ export function ensureAllHrefsPreservedInLatex(
             link.category === "email" ? link.url.replace(/^mailto:/i, "") : "",
           ].filter(Boolean);
 
+          if (link.category === "github") {
+            const ghHandle = link.url.match(/github\.com\/([a-zA-Z0-9_.-]+)/i)?.[1];
+            if (ghHandle && !anchorCandidates.includes(ghHandle)) anchorCandidates.push(ghHandle);
+          } else if (link.category === "linkedin") {
+            const liHandle = link.url.match(/linkedin\.com\/in\/([a-zA-Z0-9_.-]+)/i)?.[1];
+            if (liHandle && !anchorCandidates.includes(liHandle)) anchorCandidates.push(liHandle);
+          }
+
           let replaced = false;
           for (const cand of anchorCandidates) {
             const escaped = cand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            const re = new RegExp(`\\b${escaped}\\b`, "i");
+            const re = new RegExp(`(?<![/.\w])\\b${escaped}\\b(?![/.\w])`, "i");
             if (re.test(modifiedHeader)) {
               const id = tokens.length;
               tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);
@@ -715,7 +801,10 @@ export function ensureAllHrefsPreservedInLatex(
             const id = tokens.length;
             tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(label)}}}`);
             addUrlToSet(createdUrls, link.url);
-            const snippet = ` \\enspace\\textbar\\enspace XATSTOKEN${id}X`;
+
+            const beforeEndCenter = modifiedHeader.slice(0, modifiedHeader.lastIndexOf("\\end{center}")).trimEnd();
+            const sep = /(?:\\textbar|\\enspace|\s*\|\s*)$/.test(beforeEndCenter) ? " " : " \\enspace\\textbar\\enspace ";
+            const snippet = `${sep}XATSTOKEN${id}X`;
             modifiedHeader = modifiedHeader.replace(/(\s*\\end\{center\})/, `${snippet}$1`);
           }
         }
@@ -745,10 +834,18 @@ export function ensureAllHrefsPreservedInLatex(
               link.category === "email" ? link.url.replace(/^mailto:/i, "") : "",
             ].filter(Boolean);
 
+            if (link.category === "github") {
+              const ghHandle = link.url.match(/github\.com\/([a-zA-Z0-9_.-]+)/i)?.[1];
+              if (ghHandle && !anchorCandidates.includes(ghHandle)) anchorCandidates.push(ghHandle);
+            } else if (link.category === "linkedin") {
+              const liHandle = link.url.match(/linkedin\.com\/in\/([a-zA-Z0-9_.-]+)/i)?.[1];
+              if (liHandle && !anchorCandidates.includes(liHandle)) anchorCandidates.push(liHandle);
+            }
+
             let replaced = false;
             for (const cand of anchorCandidates) {
               const escaped = cand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              const re = new RegExp(`\\b${escaped}\\b`, "i");
+              const re = new RegExp(`(?<![/.\w])\\b${escaped}\\b(?![/.\w])`, "i");
               if (re.test(modifiedHeader)) {
                 const id = tokens.length;
                 tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);
@@ -772,7 +869,18 @@ export function ensureAllHrefsPreservedInLatex(
               const id = tokens.length;
               tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(label)}}}`);
               addUrlToSet(createdUrls, link.url);
-              modifiedHeader = `${modifiedHeader.trimEnd()} \\enspace\\textbar\\enspace XATSTOKEN${id}X\n`;
+
+              if (modifiedHeader.includes("\\end{tabular*}") || modifiedHeader.includes("\\end{tabular}")) {
+                const tabEndMatch = modifiedHeader.match(/(\s*\\end\{tabular\*?\})/);
+                if (tabEndMatch) {
+                  const beforeTabEnd = modifiedHeader.slice(0, tabEndMatch.index).trimEnd();
+                  const sep = /(?:\\textbar|\\enspace|\s*\|\s*|\\\\)$/.test(beforeTabEnd) ? " " : " \\enspace\\textbar\\enspace ";
+                  modifiedHeader = modifiedHeader.replace(/(\s*\\end\{tabular\*?\})/, `${sep}XATSTOKEN${id}X$1`);
+                }
+              } else {
+                const sep = /(?:\\textbar|\\enspace|\s*\|\s*|\\\\)$/.test(modifiedHeader.trimEnd()) ? " " : " \\enspace\\textbar\\enspace ";
+                modifiedHeader = `${modifiedHeader.trimEnd()}${sep}XATSTOKEN${id}X\n`;
+              }
             }
           }
         }
@@ -790,7 +898,7 @@ export function ensureAllHrefsPreservedInLatex(
       if (!hasUrlInSet(createdUrls, link.url)) {
         const anchor = link.text || (link.category === "project_code" ? "Code" : "Live Demo");
         const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const re = new RegExp(`\\b${escaped}\\b`, "i");
+        const re = new RegExp(`(?<![/.\w])\\b${escaped}\\b(?![/.\w])`, "i");
         if (re.test(currentDoc)) {
           const id = tokens.length;
           tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(anchor)}}}`);
@@ -803,6 +911,11 @@ export function ensureAllHrefsPreservedInLatex(
 
   // Step 10: Untokenize all protected \href commands
   currentDoc = restoreTokens(currentDoc, tokens);
+
+  // Step 10b: Convert any remaining Markdown formatting in LaTeX body (e.g. from AI rewrites or templates)
+  currentDoc = currentDoc
+    .replace(/\*\*([^*\n]+?)\*\*/g, "\\textbf{$1}")
+    .replace(/`([^`\n]+)`/g, "\\texttt{$1}");
 
   // Step 11: Ensure hyperref package and urlstyle are properly included in the preamble
   if (currentDoc.includes("\\href{") || currentDoc.includes("\\url{")) {
@@ -840,7 +953,7 @@ export async function validatePdfHyperlinks(
   }
 
   const { PDFParse } = await import("pdf-parse");
-  const p: any = new PDFParse({ data: pdfBuffer });
+  const p = new PDFParse({ data: pdfBuffer }) as unknown as PdfParseInstance;
   await p.load();
 
   const foundUrls: string[] = [];
@@ -848,8 +961,8 @@ export async function validatePdfHyperlinks(
     const page = await p.doc.getPage(i);
     const annots = (await page.getAnnotations({ intent: "display" })) || [];
     const pageLinks = annots
-      .filter((a: any) => a.subtype === "Link" && (a.url || a.unsafeUrl))
-      .map((a: any) => (a.url || a.unsafeUrl).trim());
+      .filter((a: PdfAnnotationItem) => a.subtype === "Link" && (a.url || a.unsafeUrl))
+      .map((a: PdfAnnotationItem) => (a.url || a.unsafeUrl || "").trim());
     foundUrls.push(...pageLinks);
   }
   await p.destroy().catch(() => {});

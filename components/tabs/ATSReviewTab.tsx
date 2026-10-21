@@ -109,6 +109,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
   const [applyingLatex, setApplyingLatex] = useState(false);
   const [latexCopied, setLatexCopied] = useState(false);
   const [compiledPdfUrl, setCompiledPdfUrl] = useState<string | null>(null);
+  const compiledPdfSourceRef = useRef<string>("");
   const [rightPanelView, setRightPanelView] = useState<"code" | "pdf">("code");
   const [compileError, setCompileError] = useState<{ message: string; log?: string } | null>(null);
   const [savedLatexToast, setSavedLatexToast] = useState(false);
@@ -785,8 +786,9 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
   async function downloadCompiledLatexPDF(texString: string, options?: { previewOnly?: boolean }) {
     if (!texString || !texString.trim()) return;
 
-    // Direct reuse if PDF blob is already compiled for this exact request and not previewOnly
-    if (!options?.previewOnly && compiledPdfUrl) {
+    // Direct reuse if PDF blob is already compiled for this exact request and not previewOnly,
+    // AND the cached PDF matches this exact LaTeX source revision.
+    if (!options?.previewOnly && compiledPdfUrl && compiledPdfSourceRef.current === texString) {
       const a = document.createElement("a");
       a.href = compiledPdfUrl;
       a.download = getCandidateFilename(text, effectiveCompany, "pdf");
@@ -818,6 +820,10 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
 
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
+      if (compiledPdfUrl && compiledPdfUrl !== url) {
+        URL.revokeObjectURL(compiledPdfUrl);
+      }
+      compiledPdfSourceRef.current = texString;
       setCompiledPdfUrl(url);
       setCompileError(null);
 
