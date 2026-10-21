@@ -3,6 +3,7 @@ import { getCandidateFilename, generateATSLatex } from "@/lib/ats/tailor";
 import {
   ensureAllHrefsPreservedInLatex,
   extractHyperlinksFromLatex,
+  extractHyperlinksFromMarkdownText,
   validatePdfHyperlinks,
 } from "@/lib/ats/hyperlinks";
 
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         },
         body: formData,
-        signal: AbortSignal.timeout(8000), // 8 sec timeout per attempt
+        signal: AbortSignal.timeout(25000), // 25 sec timeout for reliable external TeXLive compilation
       });
     }
 
@@ -81,12 +82,12 @@ export async function POST(req: NextRequest) {
         }
 
         if (!stdSuccess && (!response || !response.ok || !contentType.includes("pdf"))) {
-          const logSnippet = (secondErrText || firstErrText || "LaTeX compilation syntax error").slice(0, 1500);
+          const logSnippet = (secondErrText || firstErrText || "LaTeX compilation syntax error").slice(0, 3000);
           return NextResponse.json(
             {
-              error: "LaTeX compilation syntax warning",
+              error: "LaTeX compilation failed",
               log: logSnippet,
-              suggestion: "Custom font or package conflict detected. You can open and compile directly in Overleaf with full package resolution or download the ATS Plain PDF.",
+              suggestion: "Custom font or package conflict detected. You can inspect the compiler log below, download the .tex source, or open directly in Overleaf.",
             },
             { status: 422 }
           );
@@ -97,19 +98,26 @@ export async function POST(req: NextRequest) {
     const pdfArrayBuf = await response.arrayBuffer();
     const pdfBuffer = Buffer.from(pdfArrayBuf);
 
-    // Validate compiled PDF hyperlink annotations if original template or expected links are known
+    // Validate compiled PDF hyperlink annotations across all source links
     let linkValidationHeader = "unverified";
-    if (body?.originalLatex) {
+    const allLinkSources = [body?.originalLatex, body?.resumeText, body?.markdownText, latexCode].filter(Boolean) as string[];
+    const allExpectedUrls = new Set<string>();
+    for (const src of allLinkSources) {
+      const l1 = extractHyperlinksFromLatex(src);
+      const l2 = extractHyperlinksFromMarkdownText(src);
+      for (const item of [...l1, ...l2]) {
+        if (item.url) allExpectedUrls.add(item.url);
+      }
+    }
+
+    if (allExpectedUrls.size > 0) {
       try {
-        const originalLinks = extractHyperlinksFromLatex(body.originalLatex);
-        if (originalLinks.length > 0) {
-          const val = await validatePdfHyperlinks(pdfBuffer, originalLinks.map((l) => l.url));
-          linkValidationHeader = `${val.foundUrls.length}/${originalLinks.length}`;
-          if (!val.valid) {
-            console.warn(`[PDF Hyperlink Warning] ${val.missingUrls.length} missing link annotations:`, val.missingUrls);
-          } else {
-            console.log(`[PDF Hyperlink Verified] All ${val.foundUrls.length} links are clickable in compiled PDF.`);
-          }
+        const val = await validatePdfHyperlinks(pdfBuffer, Array.from(allExpectedUrls));
+        linkValidationHeader = `${val.foundUrls.length}/${allExpectedUrls.size}`;
+        if (!val.valid) {
+          console.warn(`[PDF Hyperlink Warning] ${val.missingUrls.length} missing link annotations:`, val.missingUrls);
+        } else {
+          console.log(`[PDF Hyperlink Verified] All ${val.foundUrls.length} links are clickable in compiled PDF.`);
         }
       } catch (valErr) {
         console.warn("Failed to validate PDF hyperlink annotations:", valErr);

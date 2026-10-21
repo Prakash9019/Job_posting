@@ -91,13 +91,13 @@ export async function validateAndCompileLatex(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       },
       body: formData,
-      signal: AbortSignal.timeout(8000), // 8 sec timeout to fit within Vercel execution limits
+      signal: AbortSignal.timeout(25000), // 25 sec timeout for reliable external TeXLive compilation
     });
   }
 
   try {
-    let response = await compileWithEngine("pdflatex");
-    let contentType = response.headers.get("content-type") || "";
+    const response = await compileWithEngine("pdflatex");
+    const contentType = response.headers.get("content-type") || "";
 
     if (!response.ok || !contentType.includes("pdf")) {
       const firstErr = await response.text().catch(() => "");

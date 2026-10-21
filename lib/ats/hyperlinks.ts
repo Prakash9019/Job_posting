@@ -198,9 +198,10 @@ export function extractHyperlinksFromMarkdownText(text: string): ExtractedHyperl
   }
 
   // 3. Naked LinkedIn URLs/handles
-  const linkedinPattern = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_-]+)/gi;
+  const linkedinPattern = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_.-]+)\/?/gi;
   while ((match = linkedinPattern.exec(text)) !== null) {
-    const url = `https://linkedin.com/in/${match[1]}`;
+    const handle = match[1].replace(/[.,;:)>\]/]+$/, "");
+    const url = `https://linkedin.com/in/${handle}`;
     const norm = normalizeUrl(url);
     if (!seenUrls.has(norm)) {
       seenUrls.add(norm);
@@ -295,6 +296,19 @@ export async function extractHyperlinksFromPdf(pdfBuffer: Buffer): Promise<Extra
 }
 
 /**
+ * Sanitizes existing LaTeX \href label content by ensuring common crash-inducing characters
+ * (unescaped _, &, %, #) are safely escaped for text mode while preserving macros like \underline{...}.
+ */
+export function sanitizeLatexHrefLabel(label: string): string {
+  if (!label) return "";
+  return label
+    .replace(/(?<!\\)_/g, "\\_")
+    .replace(/(?<!\\)&/g, "\\&")
+    .replace(/(?<!\\)%/g, "\\%")
+    .replace(/(?<!\\)#/g, "\\#");
+}
+
+/**
  * Tokenizes all existing \href and \url commands into safe placeholders XATSTOKEN{id}X.
  */
 export function tokenizeExistingLatexHrefs(
@@ -336,7 +350,8 @@ export function tokenizeExistingLatexHrefs(
 
     doc += latex.slice(lastIdx, match.index);
     const url = urlParsed.content.trim();
-    const snippet = latex.slice(match.index, labelParsed.endIndex);
+    const safeLabel = sanitizeLatexHrefLabel(labelParsed.content);
+    const snippet = `\\href{${url}}{${safeLabel}}`;
     const id = tokens.length;
     tokens.push(snippet);
     if (createdUrls) addUrlToSet(createdUrls, url);
@@ -372,6 +387,19 @@ export function transformPlainTextPreservingHrefs(str: string, transformer: (pla
 }
 
 /**
+ * Safely escapes plain text strings for use inside LaTeX command arguments (e.g. \underline{...}).
+ * Prevents catastrophic TeX compilation failures caused by unescaped characters like _, %, &, #, $, {, }.
+ */
+export function escapeLatexLabel(label: string): string {
+  if (!label) return "";
+  return label
+    .replace(/\\/g, "\\textbackslash{}")
+    .replace(/[%&$#_{}]/g, "\\$&")
+    .replace(/~/g, "\\textasciitilde{}")
+    .replace(/\^/g, "\\textasciicircum{}");
+}
+
+/**
  * Converts a markdown link [Label](URL) to a valid LaTeX \href{URL}{\underline{Label}}.
  */
 export function markdownLinkToLatexHref(label: string, url: string): string {
@@ -386,11 +414,7 @@ export function markdownLinkToLatexHref(label: string, url: string): string {
     }
   }
 
-  const cleanLabel = label
-    .replace(/\\/g, "\\textbackslash{}")
-    .replace(/[%&$#_{}]/g, "\\$&")
-    .replace(/~/g, "\\textasciitilde{}")
-    .replace(/\^/g, "\\textasciicircum{}");
+  const cleanLabel = escapeLatexLabel(label);
 
   return `\\href{${targetUrl}}{\\underline{${cleanLabel}}}`;
 }
@@ -452,7 +476,7 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
     (_, email) => {
       const url = `mailto:${email}`;
       const id = tokens.length;
-      tokens.push(`\\href{${url}}{\\underline{${email}}}`);
+      tokens.push(`\\href{${url}}{\\underline{${escapeLatexLabel(email)}}}`);
       addUrlToSet(createdUrls, url);
       return `XATSTOKEN${id}X`;
     }
@@ -460,8 +484,9 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
 
   // 5. Auto-link naked LinkedIn
   cleanLine = cleanLine.replace(
-    /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_-]+)/gi,
-    (_, handle) => {
+    /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_.-]+)\/?/gi,
+    (_, rawHandle) => {
+      const handle = rawHandle.replace(/[.,;:)>\]/]+$/, "");
       const url = `https://linkedin.com/in/${handle}`;
       const id = tokens.length;
       tokens.push(`\\href{${url}}{\\underline{LinkedIn}}`);
@@ -474,12 +499,12 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
   cleanLine = cleanLine.replace(
     /(?:https?:\/\/)?(?:www\.)?github\.com\/([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)/gi,
     (_, path) => {
-      const cleanPath = path.replace(/[.,;:)>\]]+$/, "");
+      const cleanPath = path.replace(/[.,;:)>\]/]+$/, "");
       const isRepo = cleanPath.includes("/");
       const url = `https://github.com/${cleanPath}`;
       const label = isRepo ? "Code" : "GitHub";
       const id = tokens.length;
-      tokens.push(`\\href{${url}}{\\underline{${label}}}`);
+      tokens.push(`\\href{${url}}{\\underline{${escapeLatexLabel(label)}}}`);
       addUrlToSet(createdUrls, url);
       return `XATSTOKEN${id}X`;
     }
@@ -489,9 +514,9 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
   cleanLine = cleanLine.replace(
     /\b(https?:\/\/[a-zA-Z0-9._~:/?#[\]@!$&'()*+,;=-]+)\b/gi,
     (_, rawUrl) => {
-      const cleanUrl = rawUrl.replace(/[.,;:)>\]]+$/, "");
+      const cleanUrl = rawUrl.replace(/[.,;:)>\]/]+$/, "");
       const id = tokens.length;
-      tokens.push(`\\href{${cleanUrl}}{\\underline{${cleanUrl}}}`);
+      tokens.push(`\\href{${cleanUrl}}{\\underline{${escapeLatexLabel(cleanUrl)}}}`);
       addUrlToSet(createdUrls, cleanUrl);
       return `XATSTOKEN${id}X`;
     }
@@ -601,7 +626,7 @@ export function ensureAllHrefsPreservedInLatex(
     (_, email) => {
       const url = `mailto:${email}`;
       const id = tokens.length;
-      tokens.push(`\\href{${url}}{\\underline{${email}}}`);
+      tokens.push(`\\href{${url}}{\\underline{${escapeLatexLabel(email)}}}`);
       addUrlToSet(createdUrls, url);
       return `XATSTOKEN${id}X`;
     }
@@ -609,8 +634,9 @@ export function ensureAllHrefsPreservedInLatex(
 
   // Step 5: Convert naked LinkedIn in non-href text
   currentDoc = currentDoc.replace(
-    /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_-]+)/gi,
-    (_, handle) => {
+    /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_.-]+)\/?/gi,
+    (_, rawHandle) => {
+      const handle = rawHandle.replace(/[.,;:)>\]/]+$/, "");
       const url = `https://linkedin.com/in/${handle}`;
       const id = tokens.length;
       tokens.push(`\\href{${url}}{\\underline{LinkedIn}}`);
@@ -628,7 +654,7 @@ export function ensureAllHrefsPreservedInLatex(
       const url = `https://github.com/${cleanPath}`;
       const label = isRepo ? "Code" : "GitHub";
       const id = tokens.length;
-      tokens.push(`\\href{${url}}{\\underline{${label}}}`);
+      tokens.push(`\\href{${url}}{\\underline{${escapeLatexLabel(label)}}}`);
       addUrlToSet(createdUrls, url);
       return `XATSTOKEN${id}X`;
     }
@@ -640,7 +666,7 @@ export function ensureAllHrefsPreservedInLatex(
     (_, rawUrl) => {
       const cleanUrl = rawUrl.replace(/[.,;:)>\]]+$/, "");
       const id = tokens.length;
-      tokens.push(`\\href{${cleanUrl}}{\\underline{${cleanUrl}}}`);
+      tokens.push(`\\href{${cleanUrl}}{\\underline{${escapeLatexLabel(cleanUrl)}}}`);
       addUrlToSet(createdUrls, cleanUrl);
       return `XATSTOKEN${id}X`;
     }
@@ -649,7 +675,7 @@ export function ensureAllHrefsPreservedInLatex(
   // Step 8: Ensure all contact links from allKnownLinks are represented in the header
   const headerMatch = currentDoc.match(/(\\begin\{center\}[\s\S]*?\\end\{center\})/);
   if (headerMatch) {
-    let headerText = headerMatch[1];
+    const headerText = headerMatch[1];
     let modifiedHeader = headerText;
 
     for (const link of allKnownLinks) {
@@ -668,7 +694,7 @@ export function ensureAllHrefsPreservedInLatex(
             const re = new RegExp(`\\b${escaped}\\b`, "i");
             if (re.test(modifiedHeader)) {
               const id = tokens.length;
-              tokens.push(`\\href{${link.url}}{\\underline{${cand}}}`);
+              tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);
               addUrlToSet(createdUrls, link.url);
               modifiedHeader = modifiedHeader.replace(re, `XATSTOKEN${id}X`);
               replaced = true;
@@ -687,7 +713,7 @@ export function ensureAllHrefsPreservedInLatex(
                 ? link.url.replace(/^mailto:/i, "")
                 : "Portfolio");
             const id = tokens.length;
-            tokens.push(`\\href{${link.url}}{\\underline{${label}}}`);
+            tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(label)}}}`);
             addUrlToSet(createdUrls, link.url);
             const snippet = ` \\enspace\\textbar\\enspace XATSTOKEN${id}X`;
             modifiedHeader = modifiedHeader.replace(/(\s*\\end\{center\})/, `${snippet}$1`);
@@ -698,6 +724,63 @@ export function ensureAllHrefsPreservedInLatex(
 
     if (modifiedHeader !== headerText) {
       currentDoc = currentDoc.replace(headerText, modifiedHeader);
+    }
+  } else {
+    // Universal Header Fallback: for templates using tabular*, \centering, minipage, or custom header layout
+    const docStart = currentDoc.indexOf("\\begin{document}");
+    if (docStart !== -1) {
+      const docBodyStart = docStart + "\\begin{document}".length;
+      const firstSection = currentDoc.slice(docBodyStart).search(/\\(?:section|resumeSection|cvsection|roledescription|resumeSubHeadingListStart)\b/);
+      const headerEnd = firstSection !== -1 ? docBodyStart + firstSection : Math.min(currentDoc.length, docBodyStart + 1500);
+      const headerText = currentDoc.slice(docBodyStart, headerEnd);
+      let modifiedHeader = headerText;
+
+      for (const link of allKnownLinks) {
+        if (["email", "linkedin", "github", "general"].includes(link.category)) {
+          if (!hasUrlInSet(createdUrls, link.url)) {
+            const anchorCandidates = [
+              link.text,
+              link.category === "linkedin" ? "LinkedIn" : "",
+              link.category === "github" ? "GitHub" : "",
+              link.category === "email" ? link.url.replace(/^mailto:/i, "") : "",
+            ].filter(Boolean);
+
+            let replaced = false;
+            for (const cand of anchorCandidates) {
+              const escaped = cand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const re = new RegExp(`\\b${escaped}\\b`, "i");
+              if (re.test(modifiedHeader)) {
+                const id = tokens.length;
+                tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);
+                addUrlToSet(createdUrls, link.url);
+                modifiedHeader = modifiedHeader.replace(re, `XATSTOKEN${id}X`);
+                replaced = true;
+                break;
+              }
+            }
+
+            if (!replaced) {
+              const label =
+                link.text ||
+                (link.category === "linkedin"
+                  ? "LinkedIn"
+                  : link.category === "github"
+                  ? "GitHub"
+                  : link.category === "email"
+                  ? link.url.replace(/^mailto:/i, "")
+                  : "Portfolio");
+              const id = tokens.length;
+              tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(label)}}}`);
+              addUrlToSet(createdUrls, link.url);
+              modifiedHeader = `${modifiedHeader.trimEnd()} \\enspace\\textbar\\enspace XATSTOKEN${id}X\n`;
+            }
+          }
+        }
+      }
+
+      if (modifiedHeader !== headerText) {
+        currentDoc = currentDoc.slice(0, docBodyStart) + modifiedHeader + currentDoc.slice(headerEnd);
+      }
     }
   }
 
@@ -710,7 +793,7 @@ export function ensureAllHrefsPreservedInLatex(
         const re = new RegExp(`\\b${escaped}\\b`, "i");
         if (re.test(currentDoc)) {
           const id = tokens.length;
-          tokens.push(`\\href{${link.url}}{\\underline{${anchor}}}`);
+          tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(anchor)}}}`);
           addUrlToSet(createdUrls, link.url);
           currentDoc = currentDoc.replace(re, `XATSTOKEN${id}X`);
         }

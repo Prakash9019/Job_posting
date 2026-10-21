@@ -784,6 +784,16 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
 
   async function downloadCompiledLatexPDF(texString: string, options?: { previewOnly?: boolean }) {
     if (!texString || !texString.trim()) return;
+
+    // Direct reuse if PDF blob is already compiled for this exact request and not previewOnly
+    if (!options?.previewOnly && compiledPdfUrl) {
+      const a = document.createElement("a");
+      a.href = compiledPdfUrl;
+      a.download = getCandidateFilename(text, effectiveCompany, "pdf");
+      a.click();
+      return;
+    }
+
     setCompilingPdf(true);
     setCompileError(null);
     try {
@@ -821,10 +831,14 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
       }
     } catch (err) {
       console.warn("Direct PDF compilation failed:", err);
-      if (!options?.previewOnly) {
-        // Fallback: compile to ATS Safe HTML view with clickable links
-        exportATSSafePDF(text);
-      }
+      // NEVER silently trigger browser window.print() on download failure!
+      // Report compilation failure to user so they can inspect compiler log or download .tex
+      const errorMsg = err instanceof Error ? err.message : "PDF compilation failed";
+      setAutoOptimizeToast({
+        message: `⚠️ ${errorMsg}. You can inspect the compiler log or open in Overleaf.`,
+        pts: 0,
+      });
+      setTimeout(() => setAutoOptimizeToast(null), 6000);
     } finally {
       setCompilingPdf(false);
     }
@@ -1286,6 +1300,13 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                     <button
                       type="button"
                       onClick={() => {
+                        if (compiledPdfUrl) {
+                          const a = document.createElement("a");
+                          a.href = compiledPdfUrl;
+                          a.download = getCandidateFilename(text, effectiveCompany, "pdf");
+                          a.click();
+                          return;
+                        }
                         const texToCompile = improvedLatex || previousLatex || generateATSLatex(text);
                         downloadCompiledLatexPDF(texToCompile);
                       }}
@@ -2231,6 +2252,13 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               onClick={() => {
+                if (compiledPdfUrl) {
+                  const a = document.createElement("a");
+                  a.href = compiledPdfUrl;
+                  a.download = getCandidateFilename(text, effectiveCompany, "pdf");
+                  a.click();
+                  return;
+                }
                 const texToCompile = improvedLatex || previousLatex || generateATSLatex(text);
                 downloadCompiledLatexPDF(texToCompile);
               }}
@@ -2435,6 +2463,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                   onChange={(e) => {
                     const newLatex = e.target.value;
                     setPreviousLatex(newLatex);
+                    setCompiledPdfUrl(null);
                     if (!text && newLatex.trim()) {
                       const plain = latexToPlainText(newLatex);
                       setText(plain);
@@ -2638,13 +2667,55 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                         className="w-full h-[520px] rounded-xl border border-slate-800 bg-white shadow-inner"
                         title="Compiled LaTeX PDF Preview"
                       />
-                    ) : (
+                    ) : compilingPdf ? (
                       <div className="flex flex-col items-center justify-center h-[520px] rounded-xl border border-slate-800 bg-slate-950/60 p-6 text-center space-y-3">
                         <Loader2 className="w-8 h-8 animate-spin text-emerald-400" />
                         <p className="text-sm font-semibold text-slate-200">Compiling Live PDF Preview...</p>
                         <p className="text-xs text-slate-400 max-w-sm">
                           Rendering your resume with zero-loss <code className="text-emerald-400">\href</code> links via TeXLive.
                         </p>
+                      </div>
+                    ) : compileError ? (
+                      <div className="flex flex-col items-center justify-center h-[520px] rounded-xl border border-amber-500/30 bg-slate-950/80 p-6 text-center space-y-4">
+                        <AlertTriangle className="w-10 h-10 text-amber-400" />
+                        <div className="space-y-1">
+                          <p className="text-sm font-bold text-amber-300">Compilation Error Detected</p>
+                          <p className="text-xs text-slate-400 max-w-md">{compileError.message}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => downloadCompiledLatexPDF(improvedLatex || previousLatex || generateATSLatex(text), { previewOnly: true })}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Retry Compilation</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRightPanelView("code")}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition-colors cursor-pointer"
+                          >
+                            <Code2 className="w-3.5 h-3.5" />
+                            <span>Edit Code (.tex)</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-[520px] rounded-xl border border-slate-800 bg-slate-950/60 p-6 text-center space-y-3">
+                        <Eye className="w-8 h-8 text-slate-500" />
+                        <p className="text-sm font-semibold text-slate-200">No PDF Compiled Yet</p>
+                        <p className="text-xs text-slate-400 max-w-sm">
+                          Click below to compile your LaTeX code into a live PDF preview with clickable links.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => downloadCompiledLatexPDF(improvedLatex || previousLatex || generateATSLatex(text), { previewOnly: true })}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Generate Live Preview</span>
+                        </button>
                       </div>
                     )}
                     <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
@@ -2665,7 +2736,10 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                       value={improvedLatex}
                       placeholder="% Click 'Apply Fixes to My LaTeX' or 'Apply All Fixes & Update LaTeX' to view the optimized code here."
                       maxLength={100000}
-                      onChange={(e) => setImprovedLatex(e.target.value)}
+                      onChange={(e) => {
+                        setImprovedLatex(e.target.value);
+                        setCompiledPdfUrl(null);
+                      }}
                       spellCheck={false}
                     />
                     <div className="flex items-center justify-between text-[11px] text-slate-500">

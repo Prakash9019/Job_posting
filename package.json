@@ -11,12 +11,13 @@
     "start": "next start",
     "lint": "eslint",
     "migrate:secret": "node --env-file=.env --import tsx scripts/migrate-encryption-key.ts",
-    "test": "npm run test:security && npm run test:hyperlinks && npm run test:screenshot && npm run test:quality",
+    "test": "npm run test:security && npm run test:hyperlinks && npm run test:screenshot && npm run test:quality && npm run test:parity",
     "test:audit": "node --env-file=.env --import tsx scripts/test-audit-verification.ts",
     "test:security": "node --env-file=.env --import tsx scripts/test-security.ts",
     "test:hyperlinks": "node --import tsx scripts/test-hyperlinks-regression.ts",
     "test:screenshot": "node --import tsx scripts/test-screenshot-recreation-regression.ts",
-    "test:quality": "node --import tsx scripts/test-pipeline-quality-regression.ts"
+    "test:quality": "node --import tsx scripts/test-pipeline-quality-regression.ts",
+    "test:parity": "node --import tsx scripts/test-production-parity.ts"
   },
   "dependencies": {
     "@google/genai": "^2.28.0",

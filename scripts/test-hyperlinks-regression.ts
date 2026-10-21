@@ -107,7 +107,12 @@ Go, Redis, gRPC
   // Test 4: PDF Upload & Text Extraction Link Preservation
   // -------------------------------------------------------------
   console.log("\n--- Test 4: PDF Upload & Link Extraction Pipeline ---");
-  const lakshmiPdfBytes = fs.readFileSync("Resume_Sayyapureddy_Lakshmi.pdf");
+  const lakshmiPdfPath = fs.existsSync("Resume_Sayyapureddy_Lakshmi.pdf")
+    ? "Resume_Sayyapureddy_Lakshmi.pdf"
+    : fs.existsSync("scripts/lakshmi_final.pdf")
+    ? "scripts/lakshmi_final.pdf"
+    : "uploads/resumes/user_a/1791886681511-Lakshmi_Sayyapureddy_Resume1.pdf";
+  const lakshmiPdfBytes = fs.readFileSync(lakshmiPdfPath);
   const lakshmiExtractedText = await extractResumeText(lakshmiPdfBytes, "application/pdf");
   const lakshmiMdLinks = extractHyperlinksFromMarkdownText(lakshmiExtractedText);
   console.log(`Extracted ${lakshmiMdLinks.length} links from Lakshmi PDF:`, lakshmiMdLinks);
