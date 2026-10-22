@@ -5,7 +5,8 @@ import { extractResumeText } from "@/lib/ai/resume";
 import { requireUser, AuthError } from "@/lib/auth/authorization";
 import { transcribeMultipleDocumentsWithAI } from "@/lib/ats/parse";
 import { normalizeWrappedBullets } from "@/lib/ats/scoring";
-import { generateATSLatex, compileLatexToPdfBuffer, getCandidateFilename } from "@/lib/ats/tailor";
+import { getCandidateFilename } from "@/lib/ats/tailor";
+import { generateResumePdfFromText } from "@/lib/ats/pdf-artifact";
 
 export async function GET(req: NextRequest) {
   try {
@@ -74,24 +75,41 @@ export async function POST(req: NextRequest) {
       }
 
       // Transcribe sequentially across screenshots with full hyperlink and bullet preservation
-      const rawTranscribed = await transcribeMultipleDocumentsWithAI(items);
+      let rawTranscribed: string;
+      try {
+        rawTranscribed = await transcribeMultipleDocumentsWithAI(items);
+      } catch (err) {
+        console.error("Screenshot transcription failed:", err);
+        return NextResponse.json(
+          { success: false, code: "TRANSCRIPTION_FAILED", error: "Could not read the screenshots. Please upload clearer images and try again." },
+          { status: 502 }
+        );
+      }
       extractedText = normalizeWrappedBullets(rawTranscribed);
 
-      // Recreate into pristine ATS LaTeX
-      const recreatedLatex = generateATSLatex(extractedText);
-
-      // Compile LaTeX to genuine PDF artifact
-      const compiledPdf = await compileLatexToPdfBuffer(recreatedLatex);
-      if (compiledPdf && compiledPdf.length > 0) {
-        finalBuffer = compiledPdf;
-        finalMimeType = "application/pdf";
-        finalFileName = getCandidateFilename(extractedText, undefined, "pdf");
-      } else {
-        // Fallback to primary image buffer if compiler unavailable
-        finalBuffer = items[0].buffer;
-        finalMimeType = items[0].mimeType;
-        finalFileName = files[0].name || "resume.png";
+      // Recreate as ATS LaTeX, compile, and VALIDATE the PDF (header, pages, content, links).
+      // A raw screenshot is never stored as if it were a generated resume: on any failure nothing is
+      // persisted and the previously active resume stays untouched.
+      const generated = await generateResumePdfFromText(extractedText);
+      if (!generated.ok) {
+        const diagnosticKey = `diagnostics/${userId}/${Date.now()}-failed-generation.tex`;
+        if (generated.latex) {
+          await storage.saveFile(diagnosticKey, Buffer.from(generated.latex, "utf8"), "application/x-tex").catch(() => {});
+        }
+        console.error("Screenshot resume generation failed validation:", { userId, reasons: generated.reasons, diagnosticKey });
+        return NextResponse.json(
+          {
+            success: false,
+            code: "PDF_GENERATION_FAILED",
+            error: `We could not generate a valid resume PDF from the screenshots: ${generated.reasons.join("; ")}. Nothing was saved. Please retry, or upload the resume as a PDF/.tex file.`,
+            reasons: generated.reasons,
+          },
+          { status: 422 }
+        );
       }
+      finalBuffer = generated.buffer;
+      finalMimeType = "application/pdf";
+      finalFileName = getCandidateFilename(extractedText, undefined, "pdf");
     } else {
       const primaryFile = files[0];
       const arrayBuffer = await primaryFile.arrayBuffer();
@@ -117,14 +135,9 @@ export async function POST(req: NextRequest) {
 
     const shouldBeActive = makeActive || !existingActive;
 
-    if (shouldBeActive) {
-      await prisma.resume.updateMany({
-        where: { userId },
-        data: { isActive: false },
-      });
-    }
-
-    const resume = await prisma.resume.create({
+    // Deactivate-old + create-new happen atomically; if the DB write fails the stored file is removed
+    // so no orphan artifact is left and the existing active resume is unchanged.
+    const createResume = prisma.resume.create({
       data: {
         userId,
         fileName: finalFileName,
@@ -135,6 +148,20 @@ export async function POST(req: NextRequest) {
         isActive: shouldBeActive,
       },
     });
+    let resume;
+    try {
+      if (shouldBeActive) {
+        [, resume] = await prisma.$transaction([
+          prisma.resume.updateMany({ where: { userId }, data: { isActive: false } }),
+          createResume,
+        ]);
+      } else {
+        resume = await createResume;
+      }
+    } catch (dbErr) {
+      await storage.deleteFile(storageKey).catch(() => {});
+      throw dbErr;
+    }
 
     return NextResponse.json({ success: true, resume });
   } catch (error: unknown) {

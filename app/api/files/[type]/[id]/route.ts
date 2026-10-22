@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStorageProvider } from "@/lib/storage";
+import { createHash } from "crypto";
 import { requireUser, assertFileAccess, AuthError } from "@/lib/auth/authorization";
 
 export async function GET(
@@ -21,8 +22,11 @@ export async function GET(
 
     const fileBuffer = await storage.readFile(fileInfo.filePath);
 
+    const sha256 = createHash("sha256").update(fileBuffer).digest("hex");
     return new NextResponse(new Uint8Array(fileBuffer), {
       headers: {
+        ETag: `"${sha256}"`,
+        "X-Content-SHA256": sha256,
         "Content-Type": fileInfo.mimeType,
         "Content-Disposition": `inline; filename="${encodeURIComponent(fileInfo.fileName)}"`,
         "Cache-Control": "private, max-age=3600",

@@ -236,7 +236,7 @@ Go, PostgreSQL, Docker`;
 
   assert(typeof scoreResult.score === "number" && scoreResult.score >= 0 && scoreResult.score <= 100, "Score must be 0-100");
   assert(Array.isArray(scoreResult.matches), "Matches must be array");
-  const missingRequirements = scoreResult.matches.filter((m: any) => !m.matched);
+  const missingRequirements = scoreResult.matches.filter((m) => !m.matched);
   assert(missingRequirements.length > 0, "Missing requirements should detect Kafka/Kubernetes");
   console.log(`✓ ATS score computed: ${scoreResult.score}/100. Diagnostic gaps identified without altering source.`);
 

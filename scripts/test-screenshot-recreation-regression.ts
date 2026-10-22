@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import fs from "fs";
+import path from "path";
 import {
   extractHyperlinksFromLatex,
   extractHyperlinksFromMarkdownText,
@@ -211,8 +212,9 @@ University of California, Berkeley | B.S. in Computer Science, Magna Cum Laude |
   console.log(`Successfully compiled PDF: ${pdfBuffer.length} bytes.`);
 
   // Save the compiled PDF to disk for artifact validation
-  fs.writeFileSync("test-screenshot-recreated-resume.pdf", pdfBuffer);
-  console.log("Saved test-screenshot-recreated-resume.pdf for inspection.");
+  fs.mkdirSync(path.join("tests", "output"), { recursive: true });
+  fs.writeFileSync(path.join("tests", "output", "test-screenshot-recreated-resume.pdf"), pdfBuffer);
+  console.log("Saved tests/output/test-screenshot-recreated-resume.pdf for inspection.");
 
   // Validate that all expected URLs exist as clickable /Subtype /Link annotations in the binary PDF
   const expectedUrls = mdLinks.map((l) => l.url);

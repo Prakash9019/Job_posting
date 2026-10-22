@@ -4,7 +4,8 @@ import { requireUser, assertBatchAccess, AuthError } from "@/lib/auth/authorizat
 import { getStorageProvider } from "@/lib/storage";
 import { getReadableResumeText } from "@/lib/ai/resume";
 import { generateApplicationEmail, extractFromScreenshot, extractJobDetailsFromText } from "@/lib/ai/gemini";
-import { autoTailorResumeToJD, compileLatexToPdfBuffer } from "@/lib/ats/tailor";
+import { autoTailorResumeToJD } from "@/lib/ats/tailor";
+import { compileValidatedPdf } from "@/lib/ats/pdf-artifact";
 
 export async function GET(req: NextRequest) {
   try {
@@ -161,9 +162,15 @@ export async function POST(req: NextRequest) {
     });
 
     let effectiveResumeId = resume.id;
-    let generationStatus = `ATS Tailored: ${tailored.baselineScore} → ${tailored.finalScore}/100`;
+    const generationStatus = `ATS Tailored: ${tailored.baselineScore} → ${tailored.finalScore}/100`;
 
-    const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex, sourceLatex || resumeText);
+    const compiledResult = await compileValidatedPdf(tailored.optimizedLatex, {
+      linkSource: sourceLatex || resumeText,
+      expectedText: tailored.optimizedText,
+      minContentCoverage: 0.9,
+    });
+    if (!compiledResult.ok) console.warn("Tailored PDF failed validation; keeping the original resume:", compiledResult.reasons);
+    const compiledPdf = compiledResult.ok ? compiledResult.buffer : null;
     if (compiledPdf && compiledPdf.length > 0) {
       const tailoredPath = `resumes/tailored-manual-${Date.now()}.pdf`;
       await storage.saveFile(tailoredPath, compiledPdf, "application/pdf");

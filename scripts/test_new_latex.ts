@@ -278,7 +278,7 @@ function generateTestLatex(optimizedText: string): string {
     ? "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=1.5pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}"
     : "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=0.8pt, parsep=0pt, topsep=1pt, partopsep=0pt}";
 
-  let resultLatex = `%-------------------------
+  const resultLatex = `%-------------------------
 % Adaptive ATS LaTeX Resume
 % Clean Typography, Zero Page Numbers, 100% ATS Compliant
 %------------------------

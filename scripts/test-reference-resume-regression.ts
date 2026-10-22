@@ -23,6 +23,8 @@ import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createCanvas } from "@napi-rs/canvas";
 import { generateATSLatex, compileLatexToPdfBuffer, getCandidateFilename } from "../lib/ats/tailor";
 import { extractHyperlinksFromPdf } from "../lib/ats/hyperlinks";
+import { generateResumePdfFromText } from "../lib/ats/pdf-artifact";
+import { normalizeWrappedBullets } from "../lib/ats/scoring";
 
 const FIX = path.join(__dirname, "..", "tests", "fixtures", "lakshmi");
 const OUT = path.join(__dirname, "..", "tests", "output");
@@ -303,6 +305,23 @@ async function main() {
   console.log(`       (ink-row profile L1 distance ${l1.toFixed(3)} - informational, fonts differ; see tests/output/vertical_ink_profile.json)`);
   check("VISUAL", `line count within 3 of reference (${gen.lines.length} vs ${ref.lines.length})`, Math.abs(gen.lines.length - ref.lines.length) <= 3);
   console.log(`       side-by-side image: ${path.join("tests", "output", "side_by_side_reference_vs_generated.png")}`);
+
+  // ---- TRANSCRIPT: real vision-model output for screenshots of this resume (Markdown emphasis, "## " headings) ----
+  // Captured from scripts/e2e-screenshot-pipeline.ts. Before the emphasis fix this produced "**" in the PDF,
+  // one merged skills paragraph and "*Code" project titles while every text-fixture test still passed.
+  const transcript = normalizeWrappedBullets(fs.readFileSync(path.join(FIX, "vision_transcript_raw.txt"), "utf8"));
+  const fromShots = await generateResumePdfFromText(transcript);
+  check("TRANSCRIPT", "vision transcript -> validated PDF (no markup leak, content covered)", fromShots.ok, fromShots.ok ? "" : fromShots.reasons.join("; "));
+  if (fromShots.ok) {
+    fs.writeFileSync(path.join(OUT, "generated_from_transcript.pdf"), fromShots.buffer);
+    const t = await analyze(fromShots.buffer);
+    const tBad = structuralDefects(t);
+    check("TRANSCRIPT", "transcript PDF: education/experience/project blocks, bullets, gaps, 1 page", tBad.length === 0, tBad.join("; "));
+    const skillRows = ["Languages:", "Frameworks & Libraries:", "AI/ML Platforms & Tools:", "Cloud, MLOps & Dev Tools:", "Specializations:"]
+      .filter((label) => t.lines.some((l) => l.text.startsWith(label))).length;
+    check("TRANSCRIPT", "all 5 skills rows start on their own line", skillRows === 5, `${skillRows}/5`);
+    check("TRANSCRIPT", "no stray '*' or '#' characters visible", !/[*#]/.test(t.text), t.text.match(/.{0,20}[*#].{0,20}/)?.[0] ?? "");
+  }
 
   // ---- EMAIL ----
   let buildMimeMessage: typeof import("../lib/email/gmail").buildMimeMessage | undefined;

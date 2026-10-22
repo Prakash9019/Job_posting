@@ -4,7 +4,8 @@ import { generateApplicationEmail } from "@/lib/ai/gemini";
 import { getStorageProvider } from "@/lib/storage";
 import { getReadableResumeText } from "@/lib/ai/resume";
 import { requireUser, assertDraftAccess, AuthError } from "@/lib/auth/authorization";
-import { autoTailorResumeToJD, compileLatexToPdfBuffer } from "@/lib/ats/tailor";
+import { autoTailorResumeToJD } from "@/lib/ats/tailor";
+import { compileValidatedPdf } from "@/lib/ats/pdf-artifact";
 
 export async function POST(
   req: NextRequest,
@@ -108,7 +109,13 @@ export async function POST(
       });
       effectiveResumeText = tailored.optimizedText;
 
-      const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex, sourceLatex || resumeText);
+      const compiledResult = await compileValidatedPdf(tailored.optimizedLatex, {
+        linkSource: sourceLatex || resumeText,
+        expectedText: tailored.optimizedText,
+        minContentCoverage: 0.9,
+      });
+      if (!compiledResult.ok) console.warn("Tailored PDF failed validation; keeping the original resume:", compiledResult.reasons);
+      const compiledPdf = compiledResult.ok ? compiledResult.buffer : null;
       if (compiledPdf && compiledPdf.length > 0) {
         const tailoredPath = `resumes/tailored-regen-${draft.id}-${Date.now()}.pdf`;
         await storage.saveFile(tailoredPath, compiledPdf, "application/pdf");

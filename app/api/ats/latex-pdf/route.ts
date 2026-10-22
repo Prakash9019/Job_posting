@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCandidateFilename, generateATSLatex } from "@/lib/ats/tailor";
+import { requireUser, AuthError } from "@/lib/auth/authorization";
+import { validatePdfArtifact } from "@/lib/ats/pdf-artifact";
 import {
   ensureAllHrefsPreservedInLatex,
   extractHyperlinksFromLatex,
@@ -11,6 +13,8 @@ export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
+    // Same verified-session requirement as every other route; this endpoint proxies a compile service.
+    requireUser(req);
     const body = await req.json();
     const rawLatexCode = body?.latexCode;
 
@@ -108,6 +112,16 @@ export async function POST(req: NextRequest) {
     const pdfArrayBuf = await response.arrayBuffer();
     const pdfBuffer = Buffer.from(pdfArrayBuf);
 
+    // Never serve bytes that are not a complete, parseable PDF
+    const structure = await validatePdfArtifact(pdfBuffer);
+    if (!structure.ok) {
+      console.error("[LaTeX PDF Route] Compiler returned an invalid PDF:", structure.reasons);
+      return NextResponse.json(
+        { error: "LaTeX compilation produced an invalid PDF", log: structure.reasons.join("; ") },
+        { status: 422 }
+      );
+    }
+
     // Validate compiled PDF hyperlink annotations across all source links
     let linkValidationHeader = "unverified";
     const allLinkSources = [body?.originalLatex, body?.resumeText, body?.markdownText, latexCode].filter(Boolean) as string[];
@@ -141,9 +155,14 @@ export async function POST(req: NextRequest) {
         "Content-Disposition": `attachment; filename="${downloadFilename.replace(/["\r\n]/g, "")}"`,
         "Content-Length": String(pdfBuffer.byteLength),
         "X-Hyperlinks-Validated": linkValidationHeader,
+        "X-Content-SHA256": structure.sha256,
+        "Cache-Control": "private, no-store",
       },
     });
   } catch (err: unknown) {
+    if (err instanceof AuthError) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("LaTeX PDF route error:", err);
     return NextResponse.json(

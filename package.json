@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "eslint",
     "migrate:secret": "node --env-file=.env --import tsx scripts/migrate-encryption-key.ts",
-    "test": "npm run test:security && npm run test:hyperlinks && npm run test:screenshot && npm run test:quality && npm run test:parity && npm run test:formatting && npm run test:reference",
+    "test": "npm run test:security && npm run test:hyperlinks && npm run test:screenshot && npm run test:quality && npm run test:parity && npm run test:formatting && npm run test:reference && npm run test:artifact",
     "test:audit": "node --env-file=.env --import tsx scripts/test-audit-verification.ts",
     "test:security": "node --env-file=.env --import tsx scripts/test-security.ts",
     "test:hyperlinks": "node --import tsx scripts/test-hyperlinks-regression.ts",
@@ -19,7 +19,8 @@
     "test:quality": "node --import tsx scripts/test-pipeline-quality-regression.ts",
     "test:parity": "node --import tsx scripts/test-production-parity.ts",
     "test:formatting": "node --import tsx scripts/test-resume-formatting-regression.ts",
-    "test:reference": "node --env-file=.env --import tsx scripts/test-reference-resume-regression.ts"
+    "test:reference": "node --env-file=.env --import tsx scripts/test-reference-resume-regression.ts",
+    "test:artifact": "node --env-file=.env --import tsx scripts/test-pdf-artifact-integrity.ts"
   },
   "dependencies": {
     "@google/genai": "^2.28.0",

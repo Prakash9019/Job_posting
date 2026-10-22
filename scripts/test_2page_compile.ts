@@ -1,6 +1,7 @@
 import fs from "fs";
 import { compileLatexToPdfBuffer } from "../lib/ats/tailor";
 import { PDFParse } from "pdf-parse";
+import type { PdfParseLike } from "./pdf-types";
 
 // Test 2-page comfortable layout
 async function main() {
@@ -28,13 +29,13 @@ async function main() {
 
   fs.writeFileSync("E:/Job_posting/test_2page_resume.pdf", pdfBuffer);
 
-  const p: any = new PDFParse({ data: pdfBuffer });
+  const p = new PDFParse({ data: pdfBuffer }) as unknown as PdfParseLike;
   await p.load();
   console.log("Pages in 2-page compiled PDF:", p.doc.numPages);
   for (let i = 1; i <= p.doc.numPages; i++) {
     const page = await p.doc.getPage(i);
     const textContent = await page.getTextContent();
-    const str = textContent.items.map((it: any) => it.str).join(" ");
+    const str = textContent.items.map((it) => it.str).join(" ");
     console.log(`Page ${i} text length: ${str.length}`);
     console.log(`Page ${i} ends with: ${str.slice(-120)}`);
   }

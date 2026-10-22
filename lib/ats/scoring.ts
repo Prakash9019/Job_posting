@@ -164,6 +164,24 @@ export function normalizeWrappedBullets(rawText: string): string {
   const ROLE_RE = /\b(?:software|engineer|developer|intern|scientist|analyst|lead|manager|consultant|associate|architect|researcher|director|founder|co-founder|officer|specialist|assistant)\b/i;
   const LOCATION_RE = /\b(?:remote|hybrid|bangalore|bengaluru|hyderabad|visakhapatnam|mumbai|pune|delhi|mysuru|karnataka|india|usa|ca|ny)\b/i;
 
+  // Vision/LLM transcripts wrap structural fields in Markdown emphasis: "**Inst** *Location*",
+  // "*Code | Live Demo*", "**Languages:** ...". Those markers are layout hints, not content, and they
+  // defeat label detection (merging skills rows) and field parsing, so strip them from header/meta/label
+  // lines. Bullets keep inline emphasis (it renders as real bold/italic later).
+  {
+    let sec = "contact";
+    const stripAll = (l: string) => l.replace(/^#{1,6}\s+/, "").replace(/\*{1,3}([^*\n]+?)\*{1,3}/g, "$1");
+    for (let k = 0; k < cleanLines.length; k++) {
+      const t = cleanLines[k].trim();
+      if (!t) continue;
+      const h = headings.find(([, re]) => re.test(t.replace(/^\*{1,3}|\*{1,3}$/g, "")));
+      if (h) { sec = h[0]; cleanLines[k] = stripAll(t); continue; }
+      if (BULLET_START_RE.test(t)) continue;
+      if (sec === "skills") cleanLines[k] = t.replace(/^\*{1,3}([^*\n]+?:)\*{1,3}/, "$1");
+      else if (sec === "contact" || sec === "experience" || sec === "education" || sec === "projects" || sec === "certifications") cleanLines[k] = stripAll(t);
+    }
+  }
+
   function isRoleOrOrgHeader(line: string, nextLine = ""): boolean {
     if (!line) return false;
     const t = line.trim();

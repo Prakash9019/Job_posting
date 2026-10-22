@@ -32,7 +32,7 @@ import {
   ExternalLink,
   Eye,
 } from "lucide-react";
-import type { ATSAnalysis } from "@/lib/ats/analysis";
+import type { ATSAnalysis, UnifiedATSAudit } from "@/lib/ats/analysis";
 import { scoreResume, cleanSmartTypography, extractRequirementsFromJobText } from "@/lib/ats/scoring";
 import { latexToPlainText } from "@/lib/ats/latex-text";
 import {
@@ -123,7 +123,9 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
       try {
         const savedTemplate = localStorage.getItem("ats_saved_latex_template");
         if (savedTemplate && savedTemplate.trim()) {
-          setPreviousLatex(savedTemplate);
+          // Applied after mount (not synchronously in the effect body) so SSR markup and the first
+          // client render stay identical; localStorage is only readable on the client.
+          queueMicrotask(() => setPreviousLatex(savedTemplate));
         }
       } catch (e) {
         console.warn("Failed to load saved LaTeX template from localStorage:", e);
@@ -199,7 +201,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
 
   async function triggerLatexOptimizationPipeline(
     baseResumeText: string,
-    parsedAudit: any,
+    parsedAudit: UnifiedATSAudit | null,
     targetJobText: string,
     baseLatexCode?: string
   ) {
@@ -225,8 +227,8 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
     const optimizedText = deterministic.optimizedText;
 
     setText(optimizedText);
-    const newDismissed = parsedAudit?.action_verb_and_par_rewrites ? parsedAudit.action_verb_and_par_rewrites.map((_: any, i: number) => i) : [];
-    const newAppliedGrammar = parsedAudit?.grammar_spelling_dialect_audit ? parsedAudit.grammar_spelling_dialect_audit.map((_: any, i: number) => i) : [];
+    const newDismissed = parsedAudit?.action_verb_and_par_rewrites ? parsedAudit.action_verb_and_par_rewrites.map((_, i: number) => i) : [];
+    const newAppliedGrammar = parsedAudit?.grammar_spelling_dialect_audit ? parsedAudit.grammar_spelling_dialect_audit.map((_, i: number) => i) : [];
     setDismissed(newDismissed);
     setAppliedGrammar(newAppliedGrammar);
 
@@ -294,7 +296,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
         pts: 15,
       });
       setTimeout(() => setAutoOptimizeToast(null), 5000);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn("AI Apply to LaTeX issue, fallback to deterministic LaTeX:", err);
       setImprovedLatex(deterministic.optimizedLatex);
       setLatexPatchStats(`✓ 6-Pass Remediation Applied: ${deterministic.passesSummary.rewrites} PAR Rewrites • Fallback Mode`);
@@ -560,7 +562,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
     const bulletRe = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+]|\d+[.)])\s+(.*)$/i;
 
     let candidateName = "";
-    let contactLines: string[] = [];
+    const contactLines: string[] = [];
     let isHeaderArea = true;
     let bodyHtml = "";
     let inList = false;
@@ -926,7 +928,7 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
         pts: delta > 0 ? delta : 16,
       });
       setTimeout(() => setAutoOptimizeToast(null), 5000);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.warn("AI Apply to LaTeX issue, fallback to deterministic LaTeX:", err);
       setImprovedLatex(deterministic.optimizedLatex);
       setLatexPatchStats(`✓ 6-Pass Remediation Applied: ${deterministic.passesSummary.rewrites} PAR Rewrites • Fallback Mode`);

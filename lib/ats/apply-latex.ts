@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
-import { generateATSLatex, cleanLingeringPlaceholders, getCandidateFilename, runAllRemediationPasses } from "./tailor";
-import { scoreResume, extractRequirementsFromJobText } from "./scoring";
+import { generateATSLatex, cleanLingeringPlaceholders, runAllRemediationPasses } from "./tailor";
+import type { UnifiedATSAudit } from "./analysis";
 import {
   extractHyperlinksFromLatex,
   restoreMissingHyperlinksInLatex,
@@ -13,7 +13,7 @@ export interface ApplyLatexParams {
   originalLatex: string;
   atsOptimizedText: string;
   jobText?: string;
-  audit?: any;
+  audit?: UnifiedATSAudit | null;
   customMetrics?: Record<number, string>;
 }
 
@@ -151,16 +151,16 @@ export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): 
 
   // Pre-process suggestions from audit
   const auditSuggestions = {
-    par_rewrites: params.audit?.action_verb_and_par_rewrites?.map((r: any) => ({
+    par_rewrites: params.audit?.action_verb_and_par_rewrites?.map((r) => ({
       original: r.original_bullet,
-      optimized: r.optimized_par_bullet || r.optimized_bullet,
-      metric: r.metric_added_or_placeholder || r.impact_metric,
+      optimized: r.optimized_par_bullet,
+      metric: r.metric_added_or_placeholder,
     })) || [],
-    grammar_fixes: params.audit?.grammar_spelling_dialect_audit?.map((g: any) => ({
+    grammar_fixes: params.audit?.grammar_spelling_dialect_audit?.map((g) => ({
       original: g.original_phrase,
       corrected: g.corrected_phrase,
     })) || [],
-    missing_keywords: params.audit?.jd_skills_alignment?.hard_skills_missing?.map((s: any) => s.keyword || s) || params.audit?.missing_hard_skills || [],
+    missing_keywords: params.audit?.jd_skills_alignment?.hard_skills_missing?.map((s) => s.keyword) || [],
   };
 
   // If no Gemini API key is configured, fallback to deterministic remediation passes
@@ -176,7 +176,7 @@ export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): 
 
     const compileRes = await validateAndCompileLatex(deterministic.optimizedLatex);
     let linkReport = "";
-    let hyperlinkValidation: any = undefined;
+    let hyperlinkValidation: Awaited<ReturnType<typeof validatePdfHyperlinks>> | undefined = undefined;
     if (compileRes.success && compileRes.pdfBuffer && originalLinks.length > 0) {
       hyperlinkValidation = await validatePdfHyperlinks(
         compileRes.pdfBuffer,
@@ -382,7 +382,7 @@ Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
   const hrefCount = (updatedLatex.match(/\\href\{/g) || []).length;
 
   let linkReport = "";
-  let hyperlinkValidation: any = undefined;
+  let hyperlinkValidation: Awaited<ReturnType<typeof validatePdfHyperlinks>> | undefined = undefined;
   if (compileResult.success && compileResult.pdfBuffer && originalLinks.length > 0) {
     hyperlinkValidation = await validatePdfHyperlinks(
       compileResult.pdfBuffer,

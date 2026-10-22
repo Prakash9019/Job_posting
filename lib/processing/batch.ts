@@ -4,7 +4,8 @@ import { getStorageProvider } from "@/lib/storage";
 import { extractFromScreenshot, generateApplicationEmail } from "@/lib/ai/gemini";
 import { ExtractionCategory } from "@/lib/validation/schemas";
 import { getReadableResumeText } from "@/lib/ai/resume";
-import { autoTailorResumeToJD, compileLatexToPdfBuffer } from "@/lib/ats/tailor";
+import { autoTailorResumeToJD } from "@/lib/ats/tailor";
+import { compileValidatedPdf } from "@/lib/ats/pdf-artifact";
 
 const MAX_RETRIES = parseInt(process.env.MAX_PROCESSING_RETRIES || "2", 10);
 const DEFAULT_CONCURRENCY = parseInt(process.env.PROCESSING_CONCURRENCY || "3", 10);
@@ -213,7 +214,13 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
             effectiveResumeText = tailored.optimizedText;
 
             // Compile tailored LaTeX to binary PDF Buffer preserving all hyperlinks
-            const compiledPdf = await compileLatexToPdfBuffer(tailored.optimizedLatex, sourceLatex || resumeText);
+            const compiledResult = await compileValidatedPdf(tailored.optimizedLatex, {
+              linkSource: sourceLatex || resumeText,
+              expectedText: tailored.optimizedText,
+              minContentCoverage: 0.9,
+            });
+            if (!compiledResult.ok) console.warn("Tailored PDF failed validation; keeping the original resume:", compiledResult.reasons);
+            const compiledPdf = compiledResult.ok ? compiledResult.buffer : null;
             if (compiledPdf && compiledPdf.length > 0) {
               const tailoredStoragePath = `resumes/tailored-${screenshot.id}-${Date.now()}.pdf`;
               await storage.saveFile(tailoredStoragePath, compiledPdf, "application/pdf");

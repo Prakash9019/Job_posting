@@ -2,6 +2,7 @@ import fs from "fs";
 import { compileLatexToPdfBuffer } from "../lib/ats/tailor";
 import { validatePdfHyperlinks } from "../lib/ats/hyperlinks";
 import { PDFParse } from "pdf-parse";
+import type { PdfParseLike } from "./pdf-types";
 
 // Import the function from test_new_latex or run directly
 async function main() {
@@ -16,13 +17,13 @@ async function main() {
   console.log(`PDF compiled successfully! Size: ${pdfBuffer.length} bytes`);
   fs.writeFileSync("E:/Job_posting/test_new_generated_resume.pdf", pdfBuffer);
 
-  const p: any = new PDFParse({ data: pdfBuffer });
+  const p = new PDFParse({ data: pdfBuffer }) as unknown as PdfParseLike;
   await p.load();
   console.log("Pages in compiled PDF:", p.doc.numPages);
   for (let i = 1; i <= p.doc.numPages; i++) {
     const page = await p.doc.getPage(i);
     const annots = await page.getAnnotations({ intent: "display" });
-    console.log(`Page ${i} annotations:`, annots.map((a: any) => ({ subtype: a.subtype, url: a.url || a.unsafeUrl })));
+    console.log(`Page ${i} annotations:`, annots.map((a) => ({ subtype: a.subtype, url: a.url || a.unsafeUrl })));
   }
   await p.destroy().catch(() => {});
 
