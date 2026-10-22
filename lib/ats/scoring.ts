@@ -112,9 +112,11 @@ function parseDatePoint(str: string): Date | null {
  */
 export function cleanSmartTypography(text: string): string {
   return text
-    .replace(/[\u2010\u2011\u2012\u2013\u2014\u00AD\uFE63\uFF0D]/g, "-")
+    .replace(/([a-zA-Z])[\u00AD\u2010]([a-zA-Z])/g, "$1$2")
+    .replace(/\u00AD/g, "")
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\uFE63\uFF0D]/g, "-")
     .replace(/[\u201C\u201D\u00AB\u00BB]/g, '"')
-    .replace(/[\u2018\u2019\u201A\u201B`]/g, "'");
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
 }
 
 /**
@@ -122,15 +124,24 @@ export function cleanSmartTypography(text: string): string {
  * into complete, unbroken lines so no sentences or metrics are lost on wrapped lines,
  * removing page boundary splits and fixing word hyphenation.
  */
+/**
+ * "Label: value" row used by skills-style sections. Labels may contain commas, ampersands,
+ * slashes and parentheses ("Cloud, MLOps & Dev Tools:"), which a plain word-character class
+ * would reject and so merge the row into the previous one.
+ */
+export const CATEGORY_LABEL_RE = /^([A-Z][A-Za-z0-9/&,()'’+. -]{1,44}):\s+(\S.*)$/;
+
 export function normalizeWrappedBullets(rawText: string): string {
   if (!rawText) return "";
 
   // 1. Clean smart quotes, dashes, soft hyphens, and malformed dollar-pipe sequences
   const cleaned = rawText
     .replace(/\r\n?/g, "\n")
-    .replace(/[\u2010\u2011\u2012\u2013\u2014\u00AD\uFE63\uFF0D]/g, "-")
+    .replace(/([a-zA-Z])[\u00AD\u2010]([a-zA-Z])/g, "$1$2")
+    .replace(/\u00AD/g, "")
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\uFE63\uFF0D]/g, "-")
     .replace(/[\u201C\u201D\u00AB\u00BB]/g, '"')
-    .replace(/[\u2018\u2019\u201A\u201B`]/g, "'")
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
     .replace(/\$?\s*\|\s*\$?|(?<=\s)\|\s*(?=\s)/g, " | ");
 
   const rawLines = cleaned.split("\n");
@@ -230,17 +241,21 @@ export function normalizeWrappedBullets(rawText: string): string {
 
         const isCommonAbbrev = /\b(?:e\.g|i\.e|etc|u\.s|inc|co|corp|vs|dr|mr|ms|prof|dept|approx|min|sec|no|v\d+)\.$/i.test(mergedBullet.trim());
         const endsWithPunctuation = /[.!?]$/.test(mergedBullet.trim()) && !isCommonAbbrev;
-        const endsWithOpenClause = /[,;:\-–—\(\[\{]|(?:\band|\bor|\bto|\bfor|\bwith|\bby|\bin|\bat|\bon|\busing|\bwhich|\bthat)\s*$/i.test(mergedBullet.trim());
         const nextStartsLower = /^[a-z]/.test(nextTrimmed);
         const nextIsContinuation = nextStartsLower || /^(?:and|or|to|for|with|by|in|at|on|using|which|that|reducing|improving|resulting|saving|increasing|scaling|delivering|achieving)\b/i.test(nextTrimmed);
 
-        // If an empty line separated the items and it doesn't clearly continue, break
-        if (hadEmpty && (!nextIsContinuation || endsWithPunctuation)) {
+        // Terminal punctuation (. ! ?) marks completion of bullet item; break unless next line is clearly continuation
+        if (endsWithPunctuation && !nextIsContinuation) {
           break;
         }
 
-        // If there was punctuation and next line has empty separator or looks like independent section, break
-        if (hadEmpty && endsWithPunctuation) {
+        // Never swallow project links or headings into bullets
+        if (/\b(?:code\s*[|–—]\s*live demo|live demo)\b/i.test(nextTrimmed)) {
+          break;
+        }
+
+        // If an empty line separated the items and it doesn't clearly continue, break
+        if (hadEmpty && (!nextIsContinuation || endsWithPunctuation)) {
           break;
         }
 
@@ -287,7 +302,7 @@ export function normalizeWrappedBullets(rawText: string): string {
         const nextTrimmed = cleanLines[lookAheadIdx].trim();
         if (headings.some(([, regex]) => regex.test(nextTrimmed))) break;
         if (BULLET_START_RE.test(nextTrimmed)) break;
-        if (/^[A-Za-z0-9/& -]{2,30}:\s+/.test(nextTrimmed)) break;
+        if (CATEGORY_LABEL_RE.test(nextTrimmed)) break;
 
         mergedSkill = joinLines(mergedSkill, nextTrimmed);
         i = lookAheadIdx;
@@ -505,7 +520,7 @@ export function scoreResume(text: string, requirements: Requirement[] = [], rawJ
   }
 
   const gpaPoints = hasGPA || isExperienced ? 15 : 5;
-  let sContact = Math.max(0, Math.min(100,
+  const sContact = Math.max(0, Math.min(100,
     Math.round((contacts.filter(c => c.present).length / 3) * 70) +
     (hasProfileLink ? 15 : 0) +
     gpaPoints

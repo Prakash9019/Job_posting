@@ -1,4 +1,4 @@
-import { scoreResume, extractRequirementsFromJobText, cleanSmartTypography, normalizeWrappedBullets } from "./scoring";
+import { scoreResume, extractRequirementsFromJobText, cleanSmartTypography, normalizeWrappedBullets, CATEGORY_LABEL_RE } from "./scoring";
 import { analyzeResume, UnifiedATSAudit } from "./analysis";
 import { parseBalancedBraces } from "./latex-text";
 import {
@@ -11,6 +11,7 @@ import {
   markdownLinkToLatexHref,
   transformPlainTextPreservingHrefs,
   normalizeUrl,
+  isGenericLinkAnchor,
 } from "./hyperlinks";
 
 export function escapeLatex(str: string): string {
@@ -52,11 +53,13 @@ const US_STATE_CODES = new Set([
   "dc", "pr", "vi"
 ]);
 
-const LOCATION_KEYWORDS = /\b(?:remote|hybrid|on-site|onsite|usa|united states|uk|united kingdom|india|canada|germany|france|australia|singapore|netherlands|switzerland|japan|sf|san francisco|nyc|new york|bay area|seattle|austin|chicago|boston|los angeles|london|toronto|berlin|bangalore|bengaluru|hyderabad|pune|mumbai|delhi|gurgaon|noida|dublin|amsterdam|tokyo)\b/i;
+const LOCATION_KEYWORDS = /\b(?:remote|hybrid|on-site|onsite|usa|united states|uk|united kingdom|india|canada|germany|france|australia|singapore|netherlands|switzerland|japan|sf|san francisco|nyc|new york|bay area|seattle|austin|chicago|boston|los angeles|london|toronto|berlin|bangalore|bengaluru|hyderabad|pune|mumbai|delhi|gurgaon|noida|dublin|amsterdam|tokyo|visakhapatnam|bheemunipatnam|mysuru|karnataka|chennai|kolkata|gurugram|chandigarh|jaipur|ahmedabad)\b/i;
 
 const CORPORATE_SUFFIXES = /\b(?:inc\.?|llc|l\.l\.c\.?|ltd\.?|limited|corp\.?|corporation|co\.?|company|pvt\.?\s*ltd\.?|private\s+limited|gmbh|sa|bv|plc)\b/i;
 
 const ROLE_KEYWORDS = /\b(?:engineer|developer|architect|lead|manager|analyst|intern|scientist|consultant|associate|founder|co-founder|director|specialist|designer|administrator|coordinator|officer|vp|vice president|head of|bachelor|master|phd|degree|b\.?tech|m\.?tech|b\.?s|m\.?s|b\.?a|m\.?a|candidate|fellow)\b/i;
+
+const MULTI_WORD_CITIES = /\b(?:san francisco|new york|bay area|los angeles|united states|united kingdom|mysuru,\s*karnataka)\b/i;
 
 export function isLocationSegment(str: string): boolean {
   const trimmed = str.trim();
@@ -74,6 +77,53 @@ export function isRoleSegment(str: string): boolean {
   const trimmed = str.trim();
   if (!trimmed) return false;
   return ROLE_KEYWORDS.test(trimmed);
+}
+
+export function isDegreeSegment(str: string): boolean {
+  const trimmed = str.trim();
+  if (!trimmed) return false;
+  return /\b(?:bachelor|master|b\.?tech|m\.?tech|b\.?s|m\.?s|b\.?a|m\.?a|diploma|ph\.?d|doctorate|degree|associate|high school|secondary|cgpa|gpa|percentage)\b/i.test(trimmed);
+}
+
+export function splitTrailingLocation(str: string): { main: string; loc: string } {
+  const trimmed = str.trim();
+  if (!trimmed) return { main: "", loc: "" };
+
+  if (trimmed.includes("|")) {
+    const parts = trimmed.split("|").map((p) => p.trim()).filter(Boolean);
+    if (parts.length >= 2 && isLocationSegment(parts[parts.length - 1])) {
+      return { main: parts.slice(0, -1).join(" | "), loc: parts[parts.length - 1] };
+    }
+  }
+
+  // Handle explicit comma locations like "Mysuru, Karnataka" or "City, ST"
+  const commaStateMatch = trimmed.match(/,\s*([A-Za-z]{2}|Karnataka|India|USA)\b/i);
+  if (commaStateMatch && commaStateMatch.index !== undefined) {
+    const beforeComma = trimmed.slice(0, commaStateMatch.index).trim();
+    const afterComma = trimmed.slice(commaStateMatch.index + 1).trim();
+    const beforeWords = beforeComma.split(/\s+/);
+    const cityWord = beforeWords.pop() || "";
+    const loc = `${cityWord}, ${afterComma}`;
+    return { main: beforeWords.join(" "), loc };
+  }
+
+  // Check multi-word cities at end
+  const multiMatch = trimmed.match(MULTI_WORD_CITIES);
+  if (multiMatch && trimmed.endsWith(multiMatch[0])) {
+    const main = trimmed.slice(0, -multiMatch[0].length).replace(/^[,\s]+|[,\s]+$/g, "").trim();
+    return { main, loc: multiMatch[0] };
+  }
+
+  // Check single trailing word location
+  const words = trimmed.split(/\s+/);
+  if (words.length >= 2) {
+    const lastWord = words[words.length - 1].replace(/[.,]+$/, "");
+    if (isLocationSegment(lastWord) && !ROLE_KEYWORDS.test(lastWord) && !/\b(?:technology|institute|polytechnic|engineering|science|online|systems|solutions|services|group|holdings|company)\b/i.test(lastWord)) {
+      return { main: words.slice(0, -1).join(" "), loc: lastWord };
+    }
+  }
+
+  return { main: trimmed, loc: "" };
 }
 
 export function parseOrgAndLoc(raw: string): { org: string; loc: string } {
@@ -163,6 +213,12 @@ export function generateATSLatex(
     "i"
   );
 
+  // Project "Code" / "Live Demo" links in reading order; consumed one per project heading.
+  const projectCodeLinks = allKnownLinks.filter((l) => l.category === "project_code");
+  const projectDemoLinks = allKnownLinks.filter((l) => l.category === "project_demo");
+  let nextCodeLink = 0;
+  let nextDemoLink = 0;
+
   let candidateName = "";
   const contactTokens: string[] = [];
   let isHeaderArea = true;
@@ -189,7 +245,8 @@ export function generateATSLatex(
       isHeaderArea = false;
       closeItemize();
       currentSectionName = headingMatch[0];
-      bodyLatex += `\n\\section{${headingMatch[0]}}\n`;
+      // Show the heading the candidate wrote ("EXPERIENCE"), not our internal canonical name.
+      bodyLatex += `\n\\section{${escapeLatex(normalizedHeading.toUpperCase())}}\n`;
       continue;
     }
 
@@ -250,7 +307,15 @@ export function generateATSLatex(
         bodyLatex += "\\nopagebreak[4]\n\\begin{itemize}\n";
         inItemize = true;
       }
-      bodyLatex += `  \\resumeItem{${formatLatexLine(bulletContent, allKnownLinks)}}\n`;
+      // "Kaggle Bronze Medalist: ..." / "Leadership: ..." - bold the lead-in label like the reference.
+      const labelled = currentSectionName === "ACHIEVEMENTS" && !bulletContent.includes("**")
+        ? bulletContent.match(/^([A-Z][A-Za-z0-9 &/'’-]{1,40}):\s+(\S.*)$/)
+        : null;
+      if (labelled) {
+        bodyLatex += `  \\resumeItem{\\textbf{${formatLatexLine(labelled[1], allKnownLinks)}:} ${formatLatexLine(labelled[2], allKnownLinks)}}\n`;
+      } else {
+        bodyLatex += `  \\resumeItem{${formatLatexLine(bulletContent, allKnownLinks)}}\n`;
+      }
       continue;
     }
 
@@ -262,7 +327,7 @@ export function generateATSLatex(
       continue;
     }
 
-    const categoryMatch = line.match(/^([A-Za-z0-9/& -]{2,25}):\s+(.+)$/);
+    const categoryMatch = line.match(CATEGORY_LABEL_RE);
     if (categoryMatch && !line.includes("|") && !dateRangeRe.test(line)) {
       bodyLatex += `{\\small \\textbf{${formatLatexLine(categoryMatch[1], allKnownLinks)}:} ${formatLatexLine(categoryMatch[2], allKnownLinks)}}\\\\[1pt]\n`;
       continue;
@@ -278,178 +343,176 @@ export function generateATSLatex(
     const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
     const nextDateMatch = nextLine.match(dateRangeRe);
 
-    if (["WORK EXPERIENCE", "EDUCATION"].includes(currentSectionName)) {
-      // Pattern A: Pipe-separated with date
-      if (line.includes("|") && dateMatch) {
+    // 5. Dedicated EDUCATION section parser
+    if (currentSectionName === "EDUCATION") {
+      // Single line pipe separated e.g. "Vignan's Institute... | Visakhapatnam | B.Tech... | 2023 - 2026"
+      if (line.includes("|") && (dateMatch || nextDateMatch)) {
         const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
-        const dateIdx = parts.findIndex((p) => dateRangeRe.test(p));
-        const dateStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const nonDateParts = parts.filter((_, idx) => idx !== dateIdx);
-
-        let org = "";
-        let role = "";
+        const inst = parts[0] || "";
         let loc = "";
+        let deg = "";
+        let dStr = dateMatch ? dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ") : "";
 
-        if (nonDateParts.length === 1) {
-          if (isRoleSegment(nonDateParts[0])) {
-            role = nonDateParts[0];
-          } else {
-            org = nonDateParts[0];
-          }
-        } else if (nonDateParts.length === 2) {
-          const part0IsRole = isRoleSegment(nonDateParts[0]);
-          const part1IsRole = isRoleSegment(nonDateParts[1]);
-          const part0IsLoc = isLocationSegment(nonDateParts[0]);
-          const part1IsLoc = isLocationSegment(nonDateParts[1]);
-
-          if (part0IsRole && !part1IsRole) {
-            role = nonDateParts[0];
-            if (part1IsLoc) {
-              loc = nonDateParts[1];
-            } else {
-              org = nonDateParts[1];
-            }
-          } else if (part1IsRole && !part0IsRole) {
-            role = nonDateParts[1];
-            if (part0IsLoc) {
-              loc = nonDateParts[0];
-            } else {
-              org = nonDateParts[0];
-            }
-          } else if (part1IsLoc && !part0IsLoc) {
-            org = nonDateParts[0];
-            loc = nonDateParts[1];
-          } else {
-            org = nonDateParts[0];
-            role = nonDateParts[1];
-          }
-        } else {
-          // 3 or more parts: e.g. "Google, LLC | Mountain View, CA | Senior Software Engineer"
-          // or "Senior Software Engineer | Google | Mountain View, CA"
-          const roleIdx = nonDateParts.findIndex((p) => isRoleSegment(p));
-          const locIdx = nonDateParts.findIndex((p, idx) => idx !== roleIdx && isLocationSegment(p));
-
-          if (roleIdx !== -1) {
-            role = nonDateParts[roleIdx];
-          }
-          if (locIdx !== -1) {
-            loc = nonDateParts[locIdx];
-          }
-
-          const remaining = nonDateParts.filter((_, idx) => idx !== roleIdx && idx !== locIdx);
-          org = remaining.join(" | ");
-
-          if (!role && remaining.length > 0) {
-            if (nonDateParts.length >= 3 && !loc) {
-              org = nonDateParts[0];
-              loc = nonDateParts[1];
-              role = nonDateParts[2];
-            } else {
-              role = remaining.pop() || "";
-              org = remaining.join(" | ");
-            }
+        for (let pIdx = 1; pIdx < parts.length; pIdx++) {
+          const part = parts[pIdx];
+          if (dateRangeRe.test(part)) {
+            dStr = part.replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+          } else if (isLocationSegment(part)) {
+            loc = part;
+          } else if (isDegreeSegment(part)) {
+            deg = part;
+          } else if (!deg) {
+            deg = part;
           }
         }
-
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org || "Company", allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role || org, allKnownLinks)}}{${formatLatexLine(dateStr, allKnownLinks)}}\n`;
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg || inst, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
         continue;
       }
 
-      // Pattern B: CURRENT line has date (e.g. "Platform Engineer April 2026 – September 2026")
-      // and NEXT line is company/location (e.g. "JulleyOnline Private Limited India")
-      if (dateMatch) {
-        const dateStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const lineRemaining = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-
-        if (nextLine && !isNextBulletOrHeading(nextLine) && !nextDateMatch && nextLine.length < 90) {
-          const { org, loc } = parseOrgAndLoc(nextLine);
-          const isRoleFirst = isRoleSegment(lineRemaining);
-          if (isRoleFirst) {
-            bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(lineRemaining, allKnownLinks)}}{${formatLatexLine(dateStr, allKnownLinks)}}\n`;
-          } else {
-            bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(lineRemaining, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(dateStr, allKnownLinks)}}\n`;
-          }
-          i++;
-          continue;
-        }
-
-        if (lineRemaining) {
-          const parts = lineRemaining.split(/[|–—]+/).map((p) => p.trim()).filter(Boolean);
-          const left = parts.length > 1 ? parts.map((p) => formatLatexLine(p, allKnownLinks)).join(" \\enspace\\textbar\\enspace ") : formatLatexLine(lineRemaining, allKnownLinks);
-          bodyLatex += `\\textbf{${left}} \\hfill \\textit{${formatLatexLine(dateStr, allKnownLinks)}}\\\\[1pt]\n`;
-        } else {
-          bodyLatex += `\\hfill \\textit{${formatLatexLine(dateStr, allKnownLinks)}}\\\\[1pt]\n`;
-        }
-        continue;
-      }
-
-      // Pattern C: CURRENT line does NOT have date, but NEXT line has date
-      if (!dateMatch && nextDateMatch && !line.endsWith(".") && line.length < 80 && /^[A-Z]/.test(line)) {
-        const nextDateStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const nextRemaining = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-
-        const { org, loc } = parseOrgAndLoc(line);
-        const isLineRole = isRoleSegment(line);
-        if (isLineRole) {
-          const nextOrgLoc = parseOrgAndLoc(nextRemaining);
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(nextOrgLoc.org || "Company", allKnownLinks)}}{${formatLatexLine(nextOrgLoc.loc || loc, allKnownLinks)}}\n  {${formatLatexLine(line, allKnownLinks)}}{${formatLatexLine(nextDateStr, allKnownLinks)}}\n`;
-        } else {
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(nextRemaining || org, allKnownLinks)}}{${formatLatexLine(nextDateStr, allKnownLinks)}}\n`;
-        }
+      // 2-line structure: Line i (Institution with trailing location) & Line i+1 (Degree with trailing date)
+      const splitInst = splitTrailingLocation(line);
+      if (nextLine && nextDateMatch) {
+        const dStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        const degPart = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(splitInst.main, allKnownLinks)}}{${formatLatexLine(splitInst.loc, allKnownLinks)}}\n  {${formatLatexLine(degPart, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
         i++;
         continue;
       }
 
-      // Pattern D: 3-line entry: Line i (Org/Loc), Line i+1 (Role), Line i+2 (Date)
-      const lineAfterNext = i + 2 < cleanLines.length ? cleanLines[i + 2].trim() : "";
-      const lineAfterNextDateMatch = lineAfterNext ? lineAfterNext.match(dateRangeRe) : null;
-      if (
-        !dateMatch &&
-        !nextDateMatch &&
-        lineAfterNextDateMatch &&
-        !line.endsWith(".") &&
-        line.length < 90 &&
-        nextLine.length < 90 &&
-        !isNextBulletOrHeading(nextLine)
-      ) {
-        const afterNextDateStr = lineAfterNextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        if (isRoleSegment(line) && !isRoleSegment(nextLine)) {
-          const orgLoc = parseOrgAndLoc(nextLine);
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(orgLoc.org || "Company", allKnownLinks)}}{${formatLatexLine(orgLoc.loc, allKnownLinks)}}\n  {${formatLatexLine(line, allKnownLinks)}}{${formatLatexLine(afterNextDateStr, allKnownLinks)}}\n`;
-        } else {
-          const { org, loc } = parseOrgAndLoc(line);
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org || "Company", allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(nextLine, allKnownLinks)}}{${formatLatexLine(afterNextDateStr, allKnownLinks)}}\n`;
-        }
-        i += 2;
+      // Line i itself has date
+      if (dateMatch) {
+        const dStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        const remaining = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        const splitRem = splitTrailingLocation(remaining);
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(splitRem.loc, allKnownLinks)}}\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
         continue;
       }
+
+      bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
+      continue;
     }
 
-    // Projects: Detect Project Title + Tech stack lines
+    // 6. Dedicated WORK EXPERIENCE section parser
+    if (currentSectionName === "WORK EXPERIENCE") {
+      // Pipe separated: Role | Location | Company | Date
+      if (line.includes("|") && dateMatch) {
+        const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
+        const dStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        const nonDateParts = parts.filter((p) => !dateRangeRe.test(p));
+        let role = "";
+        let org = "";
+        let loc = "";
+
+        if (nonDateParts.length === 1) {
+          if (isRoleSegment(nonDateParts[0])) role = nonDateParts[0];
+          else org = nonDateParts[0];
+        } else if (nonDateParts.length === 2) {
+          if (isRoleSegment(nonDateParts[0])) {
+            role = nonDateParts[0];
+            if (isLocationSegment(nonDateParts[1])) loc = nonDateParts[1];
+            else org = nonDateParts[1];
+          } else {
+            org = nonDateParts[0];
+            if (isRoleSegment(nonDateParts[1])) role = nonDateParts[1];
+            else loc = nonDateParts[1];
+          }
+        } else {
+          // 3 or more parts: e.g. Role | Location | Company or Company | Role | Location
+          const rIdx = nonDateParts.findIndex((p) => isRoleSegment(p));
+          const lIdx = nonDateParts.findIndex((p, idx) => idx !== rIdx && isLocationSegment(p));
+          if (rIdx !== -1) role = nonDateParts[rIdx];
+          if (lIdx !== -1) loc = nonDateParts[lIdx];
+          const rem = nonDateParts.filter((_, idx) => idx !== rIdx && idx !== lIdx);
+          org = rem.join(", ");
+        }
+
+        const topPart = org || role || "Role";
+        const bottomPart = (org && role) ? role : (org || role || "Company");
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(topPart, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(bottomPart, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+        continue;
+      }
+
+      // 3-line structure:
+      // Line i: Company + Location (e.g. "Cyberdyne Technologies, Los Angeles, CA")
+      // Line i+1: Role (e.g. "Principal Infrastructure Engineer")
+      // Line i+2: Date (e.g. "Jan. 2020 to Present")
+      if (
+        nextLine &&
+        cleanLines[i + 2] &&
+        !dateMatch &&
+        !nextDateMatch &&
+        !bulletRe.test(nextLine) &&
+        !bulletRe.test(cleanLines[i + 2])
+      ) {
+        const nextNextLine = cleanLines[i + 2].trim();
+        const nextNextDateMatch = nextNextLine.match(dateRangeRe) || nextNextLine.match(/\b(20\d{2}|19\d{2})\b/);
+        if (nextNextDateMatch) {
+          const dStr = nextNextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+          const parsedOrg = parseOrgAndLoc(line);
+          const org = parsedOrg.org || line;
+          const loc = parsedOrg.loc;
+          const role = nextLine.replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+          i += 2;
+          continue;
+        }
+      }
+
+      // 2-line structure:
+      // Line i: Role or Company with trailing location (e.g. "AI Engineer Hyderabad" or "Software Engineer Intern Mysuru, Karnataka")
+      // Line i+1: Company or Role with trailing date (e.g. "Julley Online Pvt Ltd Mar 2026 – Present")
+      if (nextLine && nextDateMatch) {
+        const dStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        const compPart = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        const splitRole = splitTrailingLocation(line);
+        let effectiveLoc = splitRole.loc;
+        let effectiveComp = compPart;
+        if (!effectiveLoc) {
+          const splitComp = splitTrailingLocation(compPart);
+          effectiveLoc = splitComp.loc;
+          effectiveComp = splitComp.main;
+        }
+        const effectiveRole = splitRole.main;
+
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(effectiveRole, allKnownLinks)}}{${formatLatexLine(effectiveLoc, allKnownLinks)}}\n  {${formatLatexLine(effectiveComp, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+        i++;
+        continue;
+      }
+
+      if (dateMatch) {
+        const dStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        const remaining = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        const splitRem = splitTrailingLocation(remaining);
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(splitRem.loc, allKnownLinks)}}\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+        continue;
+      }
+
+      bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
+      continue;
+    }
+
+    // 7. Dedicated PROJECTS section parser
     if (currentSectionName === "PROJECTS") {
-      const projectHrefs: string[] = [];
+      // If line is just "Project" or "Projects", skip completely to prevent duplicate labels
+      if (/^(?:project|projects)$/i.test(line)) {
+        continue;
+      }
+
       let cleanProjLine = line
         .replace(/^#{1,6}\s+/, "")
         .replace(/^\*{1,3}\s*/, "")
-        .replace(/\s*\*{1,3}$/, "");
+        .replace(/\s*\*{1,3}$/, "")
+        .replace(/\s*[|–—]\s*Project\b/gi, "")
+        .replace(/\s+Project$/gi, "");
 
+      const projectHrefs: string[] = [];
       cleanProjLine = cleanProjLine.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
         projectHrefs.push(markdownLinkToLatexHref(label, url));
         return "";
       });
 
-      // Also check known links that appear as words in this project line (e.g. "Code", "Live Demo")
-      for (const kLink of allKnownLinks) {
-        if (!kLink.url) continue;
-        const anchor = kLink.text.trim();
-        if (!anchor) continue;
-        const anchorRe = new RegExp(`\\b${anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
-        if (anchorRe.test(cleanProjLine)) {
-          projectHrefs.push(markdownLinkToLatexHref(anchor, kLink.url));
-          cleanProjLine = cleanProjLine.replace(anchorRe, "");
-        }
-      }
-
+      // Date first, so "Title  Code | Live Demo  2024" and "Title  2024  Code" both parse.
       let projDateStr = "";
       const pDateMatch = cleanProjLine.match(dateRangeRe) || cleanProjLine.match(/\b(20\d{2}|19\d{2})\b/);
       if (pDateMatch) {
@@ -457,8 +520,32 @@ export function generateATSLatex(
         cleanProjLine = cleanProjLine.replace(pDateMatch[0], "");
       }
 
+      // Trailing "Code | Live Demo" / "Code" / "Live Demo" labels. Anchored to the END of the line so a
+      // title such as "Code Review Bot" keeps its words. Each label takes the next unused project link
+      // (links are in reading order), so the k-th project gets the k-th Code / Demo URL.
+      const linkLabel = (label: string, url?: string) =>
+        url ? markdownLinkToLatexHref(label, url) : `\\textit{${label}}`;
+      const trailing = cleanProjLine.match(/\s+(?:(Code|Source|Repo)(?:\s*[|•]?\s*(Live Demo|Demo))?|(Live Demo|Demo))\s*$/i);
+      if (trailing) {
+        if (trailing[1]) projectHrefs.push(linkLabel(trailing[1], projectCodeLinks[nextCodeLink++]?.url));
+        const demoLabel = trailing[2] || trailing[3];
+        if (demoLabel) projectHrefs.push(linkLabel(demoLabel, projectDemoLinks[nextDemoLink++]?.url));
+        cleanProjLine = cleanProjLine.slice(0, trailing.index);
+      }
+
+      // Links whose anchor text is a (non-generic) phrase that appears in the line, e.g. a linked title.
+      for (const kLink of allKnownLinks) {
+        if (!kLink.url) continue;
+        const anchor = kLink.text.trim();
+        if (anchor.length < 3 || isGenericLinkAnchor(anchor) || /^https?:/i.test(anchor)) continue;
+        const anchorRe = new RegExp(`(?<![A-Za-z0-9])${anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`);
+        if (anchorRe.test(cleanProjLine)) {
+          projectHrefs.push(markdownLinkToLatexHref(anchor, kLink.url));
+          cleanProjLine = cleanProjLine.replace(anchorRe, "");
+        }
+      }
+
       const cleanTitle = cleanProjLine
-        .replace(/\b(code|live demo|demo|live)\b/gi, "")
         .replace(/^[|–—\s]+|[|–—\s]+$/g, "")
         .trim();
 
@@ -466,23 +553,34 @@ export function generateATSLatex(
       if (projDateStr) rightParts.push(projDateStr);
       const rightCol = rightParts.length > 0 ? rightParts.join(" \\enspace\\textbar\\enspace ") : "";
 
-      // Check if project line already has pipe/dash separator with tech stack
+      let techStack = "";
+      let titlePart = cleanTitle;
+
       if (cleanTitle.includes("|") || cleanTitle.includes(" — ") || cleanTitle.includes(" - ")) {
         const sep = cleanTitle.includes("|") ? "|" : (cleanTitle.includes(" — ") ? " — " : " - ");
         const [pTitle, ...pRest] = cleanTitle.split(sep);
-        const techPart = pRest.join(sep).trim();
-        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(pTitle.trim(), allKnownLinks)}} \\enspace\\textbar\\enspace \\emph{${formatLatexLine(techPart, allKnownLinks)}}}{${rightCol}}\n`;
-        continue;
+        titlePart = pTitle.trim();
+        techStack = pRest.join(sep).trim();
+      } else if (nextLine && !nextLine.match(bulletRe) && !CANONICAL_HEADINGS.some(([, regex]) => regex.test(nextLine)) && !/^(?:project|projects)$/i.test(nextLine)) {
+        techStack = nextLine.replace(/\s*[|–—]\s*Project\b/gi, "").replace(/\s+Project$/gi, "").trim();
+        i++;
       }
 
-      if (nextLine && !nextLine.match(bulletRe) && !CANONICAL_HEADINGS.some(([, regex]) => regex.test(nextLine))) {
-        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(cleanTitle, allKnownLinks)}} \\enspace\\textbar\\enspace \\emph{${formatLatexLine(nextLine, allKnownLinks)}}}{${rightCol}}\n`;
-        i++;
-        continue;
+      techStack = techStack.replace(/\s*[|–—]\s*Project\b/gi, "").replace(/\s+Project$/gi, "").trim();
+
+      if (techStack) {
+        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(titlePart, allKnownLinks)}}}{${rightCol}}\n{\\small \\textit{${formatLatexLine(techStack, allKnownLinks)}}}\\\\[1pt]\n`;
       } else {
-        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(cleanTitle, allKnownLinks)}}}{${rightCol}}\n`;
-        continue;
+        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(titlePart, allKnownLinks)}}}{${rightCol}}\n`;
       }
+      continue;
+    }
+
+    // Certifications: one flowing row of entries (never a left/right split)
+    if (currentSectionName === "CERTIFICATIONS") {
+      const certTokens = line.split(/\s*[|•\t]+\s*/).map((p) => formatLatexLine(p.trim(), allKnownLinks)).filter(Boolean);
+      bodyLatex += `{\\small ${certTokens.join(" \\enspace\\textbar\\enspace ")}\\par}\\vspace{1.5pt}\n`;
+      continue;
     }
 
     // Pipe-separated headers without date
@@ -497,12 +595,7 @@ export function generateATSLatex(
     }
 
     // Plain line
-    if (currentSectionName === "CERTIFICATIONS") {
-      const certTokens = line.split(/[|•–—\t]+/).map((p) => formatLatexLine(p.trim(), allKnownLinks)).filter(Boolean);
-      bodyLatex += `{\\small ${certTokens.join(" \\enspace\\textbar\\enspace ")}\\par}\\vspace{1.5pt}\n`;
-    } else {
-      bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
-    }
+    bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
   }
 
   closeItemize();
@@ -515,24 +608,25 @@ export function generateATSLatex(
     .join(" \\enspace\\textbar\\enspace ");
 
   const totalWords = cleanLines.join(" ").split(/\s+/).length;
-  const isMultiPage = cleanLines.length > 34 || totalWords > 400;
+  const isMultiPage = cleanLines.length > 55 || totalWords > 850;
 
+  const docClass = isMultiPage ? "\\documentclass[a4paper,10pt]{article}" : "\\documentclass[a4paper,9pt]{extarticle}";
   const geometrySetting = isMultiPage
-    ? "\\usepackage[a4paper,left=0.55in,right=0.55in,top=0.5in,bottom=0.5in]{geometry}"
-    : "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+    ? "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}"
+    : "\\usepackage[a4paper,left=0.35in,right=0.35in,top=0.25in,bottom=0.25in]{geometry}";
   const titlespacingSetting = isMultiPage
-    ? "\\titlespacing*{\\section}{0pt}{5pt}{2.5pt}"
-    : "\\titlespacing*{\\section}{0pt}{3pt}{1.5pt}";
+    ? "\\titlespacing*{\\section}{0pt}{4pt}{2pt}"
+    : "\\titlespacing*{\\section}{0pt}{2pt}{1pt}";
   const itemizeSetting = isMultiPage
-    ? "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=1.5pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}"
-    : "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=0.8pt, parsep=0pt, topsep=1pt, partopsep=0pt}";
+    ? "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=1.2pt, parsep=0pt, topsep=1pt, partopsep=0pt}"
+    : "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=0.25pt, parsep=0pt, topsep=0.25pt, partopsep=0pt}";
 
   let resultLatex = `%-------------------------
 % Adaptive ATS LaTeX Resume
 % Clean Typography, Zero Page Numbers, 100% ATS Compliant
 %------------------------
 
-\\documentclass[a4paper,10pt]{article}
+${docClass}
 ${geometrySetting}
 \\usepackage{titlesec}
 \\usepackage[usenames,dvipsnames]{color}
@@ -559,18 +653,18 @@ ${itemizeSetting}
 }
 
 \\newcommand{\\resumeSubheading}[4]{
-  \\vspace{1.5pt}\\nopagebreak[3]
+  \\vspace{0.5pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
-    \\textbf{#1} & \\textit{\\small #2} \\\\[-0.5pt]
+    \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
     \\textit{\\small #3} & \\textit{\\small #4}
-  \\end{tabular*}\\vspace{-1pt}\\nopagebreak[4]
+  \\end{tabular*}\\vspace{-1.5pt}\\nopagebreak[4]
 }
 
 \\newcommand{\\resumeProjectHeading}[2]{
-  \\vspace{1.5pt}\\nopagebreak[3]
+  \\vspace{0.5pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     #1 & \\textit{\\small #2}
-  \\end{tabular*}\\vspace{-1pt}\\nopagebreak[4]
+  \\end{tabular*}\\vspace{-1.5pt}\\nopagebreak[4]
 }
 
 \\newcommand{\\resumeDivider}{\\enspace\\textbar\\enspace}
@@ -1005,7 +1099,7 @@ export function cleanLingeringPlaceholders(content: string, isLatex = false): st
 
   // 6. Clean dangling punctuation fragments (e.g. ", ." or multiple dots) without collapsing newlines
   cleaned = cleaned
-    .replace(/[ \t]{2,}/g, " ")
+    .replace(/(?<=\S)[ \t]{2,}/g, " ")
     .replace(/[ \t]+,[ \t]*/g, ", ")
     .replace(/,[ \t]*\./g, ".")
     .replace(/[ \t]+\./g, ".")

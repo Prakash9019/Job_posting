@@ -1,0 +1,73 @@
+Sayyapureddy Lakshmi
+lakshmi.charvy1819@gmail.com | +91-8309769388 | GitHub | LinkedIn | X
+PROFESSIONAL SUMMARY
+Computer Science graduate (B.Tech, CGPA 8.84) with hands-on experience building production Artificial Intelligence (AI) systems
+and research experience at IISc Bangalore (Centre for Brain Research). Specialized in Agentic AI, Large Language Models, Retrieval-
+Augmented Generation (RAG), and Computer Vision, with a track record of building multi-agent orchestration pipelines, optimizing
+transformer architectures for medical imaging, and deploying automated workflow agents using LangChain, PyTorch, and TensorFlow.
+EDUCATION
+Vignan’s Institute Of Information Technology Visakhapatnam
+Bachelor of Technology in Computer Science Technology; CGPA: 8.84 2023 – 2026
+Government Polytechnic for Women Bheemunipatnam
+Diploma in Computer Engineering; Percentage: 90.6% 2020 – 2023
+EXPERIENCE
+AI Engineer Hyderabad
+Julley Online Pvt Ltd Mar 2026 – Present
+• Architecting and building a secure Enterprise Agentic Stack to power production-grade AI assistants, with security and access control
+as core design constraints.
+• Implementing multi-agent orchestration using Agno, GraphRAG-based contextual memory with Cognee, semantic caching via Redis,
+and identity-aware access control using Scalekit to ensure reliable, low-latency, and multi-tenant-safe AI workflows for B2B applica-
+tions.
+• Developed and published the iOS and Android mobile applications for the company’s Company Secretary (CS) compliance platform
+to their respective app stores.
+• Built OCR-based extraction pipelines to process and structure large volumes of financial data for the platform’s automated compliance
+workflows.
+Software Engineer Intern Mysuru, Karnataka
+Infosys Dec 2025 – Mar 2026
+• Contributed to the design, development, and testing of full-stack web application features and backend services using Python, JavaScript,
+and SQL within an Agile/Scrum team.
+• Built and integrated REST APIs and worked with MySQL databases, using Git for version control and Jira for sprint tracking, to deliver
+features on schedule.
+• Collaborated with senior engineers on code reviews and debugging, and documented technical specifications to support cross-team
+handoffs.
+Research Intern Bangalore
+Centre for Brain Research, IISc Bangalore Jun 2025 – Aug 2025
+• Achieved 90% accuracy with Swin Transformer and 92% accuracy with TransNetOCT for Alzheimer’s Disease classification using
+Retinal OCT images.
+• Engineered optimized data pipelines for preprocessing and training transformer-based architectures using PyTorch and TensorFlow,
+reducing training time by 20%.
+Data Science Intern Remote
+Arthavo Technologies Mar 2024 – May 2024
+• Developed an Emotion Recognition System using Computer Vision (OpenCV) and optimized inference latency with efficient Scikit-
+learn classification algorithms.
+PROJECTS
+AI-Powered Resume Analyzer Code | Live Demo
+Gemini Pro, LLM, Prompt Engineering
+• Built an intelligent ATS system using Google Gemini Pro with a prompting strategy that extracts keywords from resumes against Job
+Descriptions (JD), improving candidate matching rates by 18%.
+MCQ Generator Code | Live Demo
+LangChain, Gemini API, RAG
+• Built an automated assessment tool using LangChain and a RAG pipeline to generate context-aware questions from PDF documents,
+strictly grounded in source material to eliminate hallucinations.
+Multi-Language Invoice Extractor Code | Live Demo
+OCR, Gemini Pro
+• Built an end-to-end invoice processing system combining OCR with LLM reasoning to extract structured data from multi-lingual
+documents without manual template configuration.
+TECHNICAL SKILLS
+Languages: Python, JavaScript, HTML, CSS, SQL
+Frameworks & Libraries: LangChain, LangGraph, PyTorch, TensorFlow, Scikit-learn, Agno, NumPy, Pandas, Matplotlib, Hugging Face, Keras
+AI/ML Platforms & Tools: Cognee, Redis, Gemini API, OpenAI API, MCP (Model Context Protocol), NeMo Guardrails, RAGAS, Vector Databases
+Cloud, MLOps & Dev Tools: AWS/Azure/GCP, Docker, Kubernetes, CI/CD, MLOps, Model Deployment, FastAPI, Streamlit, Git/GitHub, Postman,
+Jira, MySQL, Jupyter Notebook, n8n, GitHub Copilot, ChatGPT, Claude, OpenAI Codex
+Specializations: Agentic AI System Architecture, Multi-Agent Systems, Large Language Models (LLMs), Natural Language Processing (NLP),
+Retrieval-Augmented Generation (RAG), LLM Fine-Tuning, LLM Evaluation & Guardrails, AI Security & Access Control, Prompt Engineering,
+Computer Vision, Machine Learning, Deep Learning, Generative AI
+ACHIEVEMENTS
+• Kaggle Bronze Medalist: Placed 244th of 4,729 teams in the “Orbit Wars” competition (Jul 2026); Top 20 in SusHacks 2025 (50+
+hackathons); Ranked 37th in the National Entrepreneurship Challenge (India).
+• Leadership: Campus Ambassador for IIT Bombay E-Cell; Student Coordinator at ED Cell VIIT.
+CERTIFICATIONS
+CCNA: Enterprise Networking & Security (CISCO) | Python Essentials 2 (CISCO) | Claude Platform 101 | Claude Code 101 (Anthropic)
+
+-- 1 of 1 --
+

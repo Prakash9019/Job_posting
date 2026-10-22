@@ -59,6 +59,9 @@ export function categorizeUrl(url: string, text: string): ExtractedHyperlink["ca
   if (lowerUrl.includes("linkedin.com") || lowerText.includes("linkedin")) {
     return "linkedin";
   }
+  if (/credly\.com|credential|accredible|badge|coursera\.org|udemy\.com|certificate/.test(lowerUrl)) {
+    return "general";
+  }
   if (
     lowerText.includes("code") ||
     lowerText.includes("repo") ||
@@ -201,7 +204,7 @@ export function extractHyperlinksFromMarkdownText(text: string): ExtractedHyperl
   const linkedinPattern = /(?:(?:LinkedIn|in)\s*[:|–—-]?\s*)?(?:https?:\/\/)?(?:www\.)?linkedin\.com\/(?:in|pub)\/([a-zA-Z0-9_.-]+)\/?|\b(?:in|linkedin)\/([a-zA-Z0-9_.-]{3,50})\b/gi;
   while ((match = linkedinPattern.exec(text)) !== null) {
     const rawHandle = match[1] || match[2];
-    if (!rawHandle || /^(?:com|org|net|html|php)$/i.test(rawHandle)) continue;
+    if (!rawHandle || /^(?:com|org|net|html|php|linkedin)$/i.test(rawHandle)) continue;
     const handle = rawHandle.replace(/[.,;:)>\]/]+$/, "");
     const url = `https://linkedin.com/in/${handle}`;
     const norm = normalizeUrl(url);
@@ -220,7 +223,7 @@ export function extractHyperlinksFromMarkdownText(text: string): ExtractedHyperl
   const githubPattern = /(?:(?:GitHub|git)\s*[:|–—-]?\s*)?(?:https?:\/\/)?(?:www\.)?github\.com\/([a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)?)\/?|\b(?:git|github)\/([a-zA-Z0-9_.-]{3,50}(?:\/[a-zA-Z0-9_.-]+)?)\b/gi;
   while ((match = githubPattern.exec(text)) !== null) {
     const rawPath = match[1] || match[2];
-    if (!rawPath || /^(?:com|org|net|html|php)$/i.test(rawPath)) continue;
+    if (!rawPath || /^(?:com|org|net|html|php|github|git)$/i.test(rawPath)) continue;
     const fullPath = rawPath.replace(/[.,;:)>\]/]+$/, "");
     const isRepo = fullPath.includes("/");
     const url = `https://github.com/${fullPath}`;
@@ -260,6 +263,7 @@ interface PdfAnnotationItem {
   url?: string;
   unsafeUrl?: string;
   overlaidText?: string;
+  rect?: number[];
 }
 
 interface PdfDocWrapper {
@@ -293,8 +297,14 @@ export async function extractHyperlinksFromPdf(pdfBuffer: Buffer): Promise<Extra
       const page = await p.doc.getPage(pageNum);
       const annotations = (await page.getAnnotations({ intent: "display" })) || [];
 
-      for (const annot of annotations) {
-        if (annot.subtype !== "Link") continue;
+      // Annotation objects are not stored in reading order. Sort top-to-bottom, then
+      // left-to-right so that the k-th "Code" link really belongs to the k-th project.
+      const ordered = annotations
+        .map((a: PdfAnnotationItem, idx: number) => ({ a, idx, y: a.rect?.[3] ?? 0, x: a.rect?.[0] ?? 0 }))
+        .filter(({ a }) => a.subtype === "Link")
+        .sort((l, r) => (Math.abs(r.y - l.y) > 3 ? r.y - l.y : l.x - r.x) || l.idx - r.idx);
+
+      for (const { a: annot } of ordered) {
         const rawUrl = annot.url ?? annot.unsafeUrl;
         if (!rawUrl || typeof rawUrl !== "string") continue;
 
@@ -443,9 +453,17 @@ export function markdownLinkToLatexHref(label: string, url: string): string {
   return `\\href{${targetUrl}}{\\underline{${cleanLabel}}}`;
 }
 
-/**
- * Safely escapes plain text for LaTeX while protecting existing \href commands
- * and converting markdown links [Label](URL) to clickable LaTeX \href.
+const GENERIC_LINK_ANCHORS = new Set([
+  "code", "demo", "live", "live demo", "link", "site", "app", "repo", "source", "website",
+  "portfolio", "github", "linkedin", "x", "twitter", "here", "project", "paper", "video",
+  "email", "blog", "homepage",
+]);
+
+/** True for anchor words that are common in running prose and so must never be linked mid-sentence. */
+export function isGenericLinkAnchor(anchor: string): boolean {
+  return GENERIC_LINK_ANCHORS.has(anchor.trim().toLowerCase());
+}
+
 /**
  * Safely escapes plain text for LaTeX while protecting existing \href commands
  * and converting markdown links [Label](URL) to clickable LaTeX \href.
@@ -537,7 +555,11 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
     const seenAnchors = new Set<string>();
     for (const link of knownLinks) {
       if (!link.url || link.url.length < 5) continue;
-      const anchor = link.text.trim();
+      let anchor = link.text.trim();
+      if (anchor.includes("\n")) {
+        const parts = anchor.split("\n").map((p) => p.trim()).filter(Boolean);
+        anchor = parts[parts.length - 1] || anchor;
+      }
       if (!anchor || anchor.length < 2) continue;
       // Skip emails and naked URLs here; handled by dedicated regexes above
       if (anchor.includes("@") || anchor.startsWith("http://") || anchor.startsWith("https://")) {
@@ -551,8 +573,12 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
 
       const escapedAnchor = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const pattern = escapedAnchor.replace(/_/g, "(?:\\\\_|_|-|\\s*)");
-      // Must not match inside a URL or path segment
-      const wordRegex = new RegExp(`(?<![/a-zA-Z0-9])${pattern}(?![/a-zA-Z0-9])`, "i");
+      // Generic anchors ("Code", "GitHub", "X", ...) are ordinary words in prose ("code reviews",
+      // "GitHub Copilot"), so they only link when they are a whole "|"-separated segment.
+      // Every other anchor must match case-sensitively and must not sit inside a URL/path.
+      const wordRegex = isGenericLinkAnchor(anchor)
+        ? new RegExp(`(?<=^|\\|\\s*)${pattern}(?=\\s*(?:\\||$))`)
+        : new RegExp(`(?<![/a-zA-Z0-9])${pattern}(?![/a-zA-Z0-9])`);
       if (wordRegex.test(cleanLine)) {
         cleanLine = cleanLine.replace(wordRegex, () => {
           const id = tokens.length;
@@ -615,6 +641,7 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
       .replace(/[%&$#_{}]/g, "\\$&")
       .replace(/~/g, "\\textasciitilde{}")
       .replace(/\^/g, "\\textasciicircum{}")
+      .replace(/"([^"\n]*)"/g, "\\textquotedblleft{}$1\\textquotedblright{}")
       .replace(/[ \t]{2,}/g, " ")
       .replace(/\s+\|\s+/g, " \\enspace\\textbar\\enspace ");
   });
@@ -761,11 +788,30 @@ export function ensureAllHrefsPreservedInLatex(
     const headerText = headerMatch[1];
     let modifiedHeader = headerText;
 
+    const createdCategories = new Set<string>();
+    if (modifiedHeader.includes("linkedin.com") || /\\href\{[^}]*linkedin/i.test(modifiedHeader)) createdCategories.add("linkedin");
+    if (modifiedHeader.includes("github.com") || /\\href\{[^}]*github/i.test(modifiedHeader)) createdCategories.add("github");
+    if (modifiedHeader.includes("mailto:") || /\\href\{mailto:/i.test(modifiedHeader)) createdCategories.add("email");
+
     for (const link of allKnownLinks) {
-      if (["email", "linkedin", "github", "general"].includes(link.category)) {
+      const isContactCategory =
+        ["email", "linkedin", "github"].includes(link.category) ||
+        (link.category === "general" && /^(?:portfolio|website|homepage|x|twitter)$/i.test(link.text.trim()));
+
+      if (isContactCategory) {
         if (!hasUrlInSet(createdUrls, link.url)) {
+          if (["linkedin", "github", "email"].includes(link.category) && createdCategories.has(link.category)) {
+            continue;
+          }
+
+          let cleanAnchorText = link.text.trim();
+          if (cleanAnchorText.includes("\n")) {
+            const parts = cleanAnchorText.split("\n").map((p) => p.trim()).filter(Boolean);
+            cleanAnchorText = parts[parts.length - 1] || cleanAnchorText;
+          }
+
           const anchorCandidates = [
-            link.text,
+            cleanAnchorText,
             link.category === "linkedin" ? "LinkedIn" : "",
             link.category === "github" ? "GitHub" : "",
             link.category === "email" ? link.url.replace(/^mailto:/i, "") : "",
@@ -788,6 +834,7 @@ export function ensureAllHrefsPreservedInLatex(
               const id = tokens.length;
               tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);
               addUrlToSet(createdUrls, link.url);
+              createdCategories.add(link.category);
               modifiedHeader = modifiedHeader.replace(re, `XATSTOKEN${id}X`);
               replaced = true;
               break;
@@ -796,7 +843,7 @@ export function ensureAllHrefsPreservedInLatex(
 
           if (!replaced) {
             const label =
-              link.text ||
+              cleanAnchorText ||
               (link.category === "linkedin"
                 ? "LinkedIn"
                 : link.category === "github"
@@ -807,6 +854,7 @@ export function ensureAllHrefsPreservedInLatex(
             const id = tokens.length;
             tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(label)}}}`);
             addUrlToSet(createdUrls, link.url);
+            createdCategories.add(link.category);
 
             const beforeEndCenter = modifiedHeader.slice(0, modifiedHeader.lastIndexOf("\\end{center}")).trimEnd();
             const sep = /(?:\\textbar|\\enspace|\s*\|\s*)$/.test(beforeEndCenter) ? " " : " \\enspace\\textbar\\enspace ";
@@ -830,11 +878,30 @@ export function ensureAllHrefsPreservedInLatex(
       const headerText = currentDoc.slice(docBodyStart, headerEnd);
       let modifiedHeader = headerText;
 
+      const createdCategories = new Set<string>();
+      if (modifiedHeader.includes("linkedin.com") || /\\href\{[^}]*linkedin/i.test(modifiedHeader)) createdCategories.add("linkedin");
+      if (modifiedHeader.includes("github.com") || /\\href\{[^}]*github/i.test(modifiedHeader)) createdCategories.add("github");
+      if (modifiedHeader.includes("mailto:") || /\\href\{mailto:/i.test(modifiedHeader)) createdCategories.add("email");
+
       for (const link of allKnownLinks) {
-        if (["email", "linkedin", "github", "general"].includes(link.category)) {
+        const isContactCategory =
+          ["email", "linkedin", "github"].includes(link.category) ||
+          (link.category === "general" && /^(?:portfolio|website|homepage|x|twitter)$/i.test(link.text.trim()));
+
+        if (isContactCategory) {
           if (!hasUrlInSet(createdUrls, link.url)) {
+            if (["linkedin", "github", "email"].includes(link.category) && createdCategories.has(link.category)) {
+              continue;
+            }
+
+            let cleanAnchorText = link.text.trim();
+            if (cleanAnchorText.includes("\n")) {
+              const parts = cleanAnchorText.split("\n").map((p) => p.trim()).filter(Boolean);
+              cleanAnchorText = parts[parts.length - 1] || cleanAnchorText;
+            }
+
             const anchorCandidates = [
-              link.text,
+              cleanAnchorText,
               link.category === "linkedin" ? "LinkedIn" : "",
               link.category === "github" ? "GitHub" : "",
               link.category === "email" ? link.url.replace(/^mailto:/i, "") : "",
@@ -857,6 +924,7 @@ export function ensureAllHrefsPreservedInLatex(
                 const id = tokens.length;
                 tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(cand)}}}`);
                 addUrlToSet(createdUrls, link.url);
+                createdCategories.add(link.category);
                 modifiedHeader = modifiedHeader.replace(re, `XATSTOKEN${id}X`);
                 replaced = true;
                 break;
@@ -865,7 +933,7 @@ export function ensureAllHrefsPreservedInLatex(
 
             if (!replaced) {
               const label =
-                link.text ||
+                cleanAnchorText ||
                 (link.category === "linkedin"
                   ? "LinkedIn"
                   : link.category === "github"
@@ -876,6 +944,7 @@ export function ensureAllHrefsPreservedInLatex(
               const id = tokens.length;
               tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(label)}}}`);
               addUrlToSet(createdUrls, link.url);
+              createdCategories.add(link.category);
 
               if (modifiedHeader.includes("\\end{tabular*}") || modifiedHeader.includes("\\end{tabular}")) {
                 const tabEndMatch = modifiedHeader.match(/(\s*\\end\{tabular\*?\})/);
@@ -905,7 +974,11 @@ export function ensureAllHrefsPreservedInLatex(
       if (!hasUrlInSet(createdUrls, link.url)) {
         const anchor = link.text || (link.category === "project_code" ? "Code" : "Live Demo");
         const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const re = new RegExp(`(?<![/.\w])\\b${escaped}\\b(?![/.\w])`, "i");
+        // Case-sensitive, and generic words ("Code", "Live Demo") only link where they stand alone
+        // as a heading-style label (`{Code}`, `| Code |`, line edge) - never inside running prose.
+        const re = isGenericLinkAnchor(anchor)
+          ? new RegExp(`(?<=(?:^|[{|]|\\\\textbar(?:\\\\enspace)?)[ \\t]*)${escaped}(?=[ \\t]*(?:$|[}|\\\\]|\\\\enspace))`, "m")
+          : new RegExp(`(?<![/.\\w])\\b${escaped}\\b(?![/.\\w])`);
         if (re.test(currentDoc)) {
           const id = tokens.length;
           tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(anchor)}}}`);

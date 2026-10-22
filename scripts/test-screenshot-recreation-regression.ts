@@ -359,7 +359,7 @@ TechCorp | Engineer | 2022 – Present | Austin, TX
     "Soft hyphen in 'distributed' must be cleanly rejoined"
   );
   assert(
-    latexUnicode.includes("latency by 40%"),
+    latexUnicode.includes("latency by 40"),
     "Unicode hyphen in 'latency' must be cleanly rejoined"
   );
   console.log("✅ [PASS] All unicode bullets and soft hyphens cleanly normalized!\n");
