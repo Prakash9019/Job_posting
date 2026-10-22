@@ -132,6 +132,14 @@ async function runTests() {
     create: { id: "user_b", name: "User B" },
   });
 
+  // Clean up any old test fixtures if left over
+  await prisma.resume.deleteMany({
+    where: {
+      userId: "user_a",
+      filePath: "resumes/user_a/test.pdf",
+    },
+  });
+
   // Create Resume for User A
   const resumeUserA = await prisma.resume.create({
     data: {
@@ -140,7 +148,7 @@ async function runTests() {
       filePath: "resumes/user_a/test.pdf",
       fileSize: 1024,
       extractedText: "Skills: TypeScript, Node.js, Next.js",
-      isActive: true,
+      isActive: false,
     },
   });
 

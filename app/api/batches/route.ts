@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getStorageProvider } from "@/lib/storage";
 import { calculateFileHash } from "@/lib/processing/batch";
+import { isReadableResumeText } from "@/lib/ai/resume";
 import { requireUser, assertResumeAccess, assertBatchAccess, AuthError } from "@/lib/auth/authorization";
 
 export async function GET(req: NextRequest) {
@@ -80,8 +81,17 @@ export async function POST(req: NextRequest) {
     } else {
       const activeResume = await prisma.resume.findFirst({
         where: { userId, isActive: true },
+        orderBy: { updatedAt: "desc" },
       });
-      if (activeResume) finalResumeId = activeResume.id;
+      if (activeResume && isReadableResumeText(activeResume.extractedText)) {
+        finalResumeId = activeResume.id;
+      } else {
+        const fallback = await prisma.resume.findFirst({
+          where: { userId },
+          orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }],
+        });
+        if (fallback) finalResumeId = fallback.id;
+      }
     }
 
     // 1. Create Batch record strictly for active user

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getStorageProvider } from "@/lib/storage";
 import { extractFromScreenshot, generateApplicationEmail } from "@/lib/ai/gemini";
 import { ExtractionCategory } from "@/lib/validation/schemas";
-import { getReadableResumeText } from "@/lib/ai/resume";
+import { getReadableResumeText, isReadableResumeText } from "@/lib/ai/resume";
 import { autoTailorResumeToJD } from "@/lib/ats/tailor";
 import { compileValidatedPdf } from "@/lib/ats/pdf-artifact";
 
@@ -158,17 +158,51 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
       /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(extraction.recipientEmail.trim());
 
     if (hasValidEmail) {
-      // Find active resume for user if batch doesn't have one
+      // Find active resume for user if batch doesn't have one or if current one is unreadable
       let resume = screenshot.batch.resume;
-      if (!resume) {
+      if (!resume || !isReadableResumeText(resume.extractedText)) {
         resume = await prisma.resume.findFirst({
           where: { userId: screenshot.batch.userId, isActive: true },
+          orderBy: { updatedAt: "desc" },
+        });
+      }
+
+      // If still missing or unreadable, fall back to any resume with readable text
+      if (!resume || !isReadableResumeText(resume.extractedText)) {
+        resume = await prisma.resume.findFirst({
+          where: {
+            userId: screenshot.batch.userId,
+            ...(resume ? { id: { not: resume.id } } : {}),
+          },
+          orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }],
         });
       }
 
       if (resume) {
         try {
-          const resumeText = await getReadableResumeText(resume);
+          let resumeText = await getReadableResumeText(resume);
+          if (!isReadableResumeText(resumeText)) {
+            // Attempt fallback to another user resume with readable text
+            const fallbackResume = await prisma.resume.findFirst({
+              where: {
+                userId: screenshot.batch.userId,
+                id: { not: resume.id },
+              },
+              orderBy: [{ isActive: "desc" }, { updatedAt: "desc" }],
+            });
+            if (fallbackResume) {
+              const fallbackText = await getReadableResumeText(fallbackResume);
+              if (isReadableResumeText(fallbackText)) {
+                resume = fallbackResume;
+                resumeText = fallbackText;
+              }
+            }
+          }
+
+          if (!isReadableResumeText(resumeText)) {
+            throw new Error("No readable resume text available to generate personalized email.");
+          }
+
           if (resumeText !== resume.extractedText) {
             await prisma.resume.update({ where: { id: resume.id }, data: { extractedText: resumeText } });
           }

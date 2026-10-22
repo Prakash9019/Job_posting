@@ -241,6 +241,14 @@ async function runSecurityTests() {
     create: { id: "user_b", name: "User B" },
   });
 
+  // Clean up any old test fixtures if left over
+  await prisma.resume.deleteMany({
+    where: {
+      userId: "user_a",
+      filePath: "resumes/user_a/test.pdf",
+    },
+  });
+
   const resumeA = await prisma.resume.create({
     data: {
       userId: "user_a",
@@ -249,7 +257,7 @@ async function runSecurityTests() {
       fileSize: 1024,
       mimeType: "application/pdf",
       extractedText: "Secret candidate qualifications",
-      isActive: true,
+      isActive: false,
     },
   });
 
