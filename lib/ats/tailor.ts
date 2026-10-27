@@ -345,6 +345,45 @@ export function generateATSLatex(
 
     // 5. Dedicated EDUCATION section parser
     if (currentSectionName === "EDUCATION") {
+      // Check for Columnar split: e.g. Inst 1, Deg 1, Inst 2, Deg 2, Loc 1, Date 1, Loc 2, Date 2
+      const eduLines: string[] = [];
+      let peekIdx = i;
+      while (peekIdx < cleanLines.length) {
+        const pl = cleanLines[peekIdx].trim();
+        if (bulletRe.test(pl) || CANONICAL_HEADINGS.some(([, regex]) => regex.test(pl.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim()))) {
+          break;
+        }
+        eduLines.push(pl);
+        peekIdx++;
+      }
+
+      if (eduLines.length >= 4 && eduLines.length % 4 === 0) {
+        const half = eduLines.length / 2;
+        let isColumnSplit = true;
+        for (let j = 0; j < half; j++) {
+          if (splitTrailingLocation(eduLines[j]).loc || dateRangeRe.test(eduLines[j])) isColumnSplit = false;
+        }
+        for (let j = 0; j < half; j += 2) {
+          const locCandidate = eduLines[half + j];
+          const dateCandidate = eduLines[half + j + 1];
+          if (!splitTrailingLocation(locCandidate).loc && !locCandidate.match(/^[A-Za-z\s,.-]+$/)) isColumnSplit = false;
+          if (locCandidate.length > 35 || locCandidate.includes(";")) isColumnSplit = false;
+          if (!dateRangeRe.test(dateCandidate) && !dateCandidate.match(/\b(20\d{2}|19\d{2})\b/)) isColumnSplit = false;
+        }
+
+        if (isColumnSplit) {
+          for (let j = 0; j < half; j += 2) {
+            const inst = eduLines[j];
+            const deg = eduLines[j + 1];
+            const loc = eduLines[half + j];
+            const dStr = (eduLines[half + j + 1].match(dateRangeRe)?.[0] || eduLines[half + j + 1]).replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+            bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+          }
+          i = peekIdx - 1;
+          continue;
+        }
+      }
+
       // Single line pipe separated e.g. "Vignan's Institute... | Visakhapatnam | B.Tech... | 2023 - 2026"
       if (line.includes("|") && (dateMatch || nextDateMatch)) {
         const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
@@ -371,12 +410,35 @@ export function generateATSLatex(
 
       // 2-line structure: Line i (Institution with trailing location) & Line i+1 (Degree with trailing date)
       const splitInst = splitTrailingLocation(line);
-      if (nextLine && nextDateMatch) {
+      if (nextLine && nextDateMatch && (splitInst.loc || splitTrailingLocation(nextLine).loc)) {
         const dStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
         const degPart = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
         bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(splitInst.main, allKnownLinks)}}{${formatLatexLine(splitInst.loc, allKnownLinks)}}\n  {${formatLatexLine(degPart, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
         i++;
         continue;
+      }
+
+      // 4-line structure per entry: Inst \n Deg \n Loc \n Date OR Inst \n Loc \n Deg \n Date (when no trailing location)
+      if (i + 3 < cleanLines.length) {
+        const l1 = cleanLines[i + 1].trim();
+        const l2 = cleanLines[i + 2].trim();
+        const l3 = cleanLines[i + 3].trim();
+        if (dateRangeRe.test(l3) && !bulletRe.test(l1) && !bulletRe.test(l2)) {
+          const dStr = l3.match(dateRangeRe)![0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+          let inst = line;
+          let deg = "";
+          let loc = "";
+          if (isLocationSegment(l1)) {
+            loc = l1;
+            deg = l2;
+          } else {
+            deg = l1;
+            loc = l2;
+          }
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+          i += 3;
+          continue;
+        }
       }
 
       // Line i itself has date
@@ -432,6 +494,65 @@ export function generateATSLatex(
         continue;
       }
 
+      // 2-line structure (preferred when location is already on line i or line i+1):
+      // Line i: Role or Company with trailing location (e.g. "AI Engineer Hyderabad" or "Software Engineer Intern Mysuru, Karnataka")
+      // Line i+1: Company or Role with trailing date (e.g. "Julley Online Pvt Ltd Mar 2026 – Present")
+      const splitRole = splitTrailingLocation(line);
+      if (nextLine && nextDateMatch && (splitRole.loc || splitTrailingLocation(nextLine).loc)) {
+        const dStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+        const compPart = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        let effectiveLoc = splitRole.loc;
+        let effectiveComp = compPart;
+        if (!effectiveLoc) {
+          const splitComp = splitTrailingLocation(compPart);
+          effectiveLoc = splitComp.loc;
+          effectiveComp = splitComp.main;
+        }
+        const effectiveRole = splitRole.main;
+
+        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(effectiveRole, allKnownLinks)}}{${formatLatexLine(effectiveLoc, allKnownLinks)}}\n  {${formatLatexLine(effectiveComp, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+        i++;
+        continue;
+      }
+
+      // 4-line structure: Role \n Company \n Location \n Date
+      if (i + 3 < cleanLines.length) {
+        const l1 = cleanLines[i + 1].trim();
+        const l2 = cleanLines[i + 2].trim();
+        const l3 = cleanLines[i + 3].trim();
+        if (dateRangeRe.test(l3) && !bulletRe.test(l1) && !bulletRe.test(l2)) {
+          const dStr = l3.match(dateRangeRe)![0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+          let role = line;
+          let comp = l1;
+          let loc = l2;
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(comp, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+          i += 3;
+          continue;
+        }
+      }
+
+      // 3-line structure:
+      // Case A: Role \n Company \n Location Date (e.g. "Julley Online" \n "Hyderabad Mar 2026 - Present")
+      if (
+        nextLine &&
+        cleanLines[i + 2] &&
+        !dateMatch &&
+        !bulletRe.test(nextLine) &&
+        !bulletRe.test(cleanLines[i + 2])
+      ) {
+        const nextNextLine = cleanLines[i + 2].trim();
+        const nextNextDateMatch = nextNextLine.match(dateRangeRe);
+        if (nextNextDateMatch) {
+          const dStr = nextNextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+          const locPart = nextNextLine.replace(nextNextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+          let topPart = line;
+          let bottomPart = nextLine;
+          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(topPart, allKnownLinks)}}{${formatLatexLine(locPart, allKnownLinks)}}\n  {${formatLatexLine(bottomPart, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+          i += 2;
+          continue;
+        }
+      }
+
       // 3-line structure:
       // Line i: Company + Location (e.g. "Cyberdyne Technologies, Los Angeles, CA")
       // Line i+1: Role (e.g. "Principal Infrastructure Engineer")
@@ -457,27 +578,6 @@ export function generateATSLatex(
           i += 2;
           continue;
         }
-      }
-
-      // 2-line structure:
-      // Line i: Role or Company with trailing location (e.g. "AI Engineer Hyderabad" or "Software Engineer Intern Mysuru, Karnataka")
-      // Line i+1: Company or Role with trailing date (e.g. "Julley Online Pvt Ltd Mar 2026 – Present")
-      if (nextLine && nextDateMatch) {
-        const dStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const compPart = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-        const splitRole = splitTrailingLocation(line);
-        let effectiveLoc = splitRole.loc;
-        let effectiveComp = compPart;
-        if (!effectiveLoc) {
-          const splitComp = splitTrailingLocation(compPart);
-          effectiveLoc = splitComp.loc;
-          effectiveComp = splitComp.main;
-        }
-        const effectiveRole = splitRole.main;
-
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(effectiveRole, allKnownLinks)}}{${formatLatexLine(effectiveLoc, allKnownLinks)}}\n  {${formatLatexLine(effectiveComp, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-        i++;
-        continue;
       }
 
       if (dateMatch) {
@@ -545,14 +645,11 @@ export function generateATSLatex(
         }
       }
 
-      const cleanTitle = cleanProjLine
+      let cleanTitle = cleanProjLine
         .replace(/^[|–—\s]+|[|–—\s]+$/g, "")
         .trim();
 
-      const rightParts = [...projectHrefs];
-      if (projDateStr) rightParts.push(projDateStr);
-      const rightCol = rightParts.length > 0 ? rightParts.join(" \\enspace\\textbar\\enspace ") : "";
-
+      // Check if next lines contain techStack or separate "Code | Live Demo" line
       let techStack = "";
       let titlePart = cleanTitle;
 
@@ -561,15 +658,42 @@ export function generateATSLatex(
         const [pTitle, ...pRest] = cleanTitle.split(sep);
         titlePart = pTitle.trim();
         techStack = pRest.join(sep).trim();
-      } else if (nextLine && !nextLine.match(bulletRe) && !CANONICAL_HEADINGS.some(([, regex]) => regex.test(nextLine)) && !/^(?:project|projects)$/i.test(nextLine)) {
-        techStack = nextLine.replace(/\s*[|–—]\s*Project\b/gi, "").replace(/\s+Project$/gi, "").trim();
-        i++;
       }
+
+      // Check upcoming lines before bullets or headings
+      while (i + 1 < cleanLines.length) {
+        const nextL = cleanLines[i + 1].trim();
+        if (bulletRe.test(nextL) || CANONICAL_HEADINGS.some(([, regex]) => regex.test(nextL.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim()))) {
+          break;
+        }
+
+        const isLinkLine = /^(?:\[?(?:Code|Source|Repo)\]?(?:\([^)]*\))?\s*[|•\s]*\[?(?:Live Demo|Demo)\]?(?:\([^)]*\))?|\[?(?:Live Demo|Demo)\]?(?:\([^)]*\))?)$/i.test(nextL);
+        if (isLinkLine) {
+          // Consume separate link line
+          if (nextL.includes("Code") || nextL.includes("Source") || nextL.includes("Repo")) {
+            projectHrefs.push(linkLabel("Code", projectCodeLinks[nextCodeLink++]?.url));
+          }
+          if (nextL.includes("Live Demo") || nextL.includes("Demo")) {
+            projectHrefs.push(linkLabel("Live Demo", projectDemoLinks[nextDemoLink++]?.url));
+          }
+          i++;
+        } else if (!techStack) {
+          // Consume tech stack line
+          techStack = nextL.replace(/\s*[|–—]\s*Project\b/gi, "").replace(/\s+Project$/gi, "").trim();
+          i++;
+        } else {
+          break;
+        }
+      }
+
+      const rightParts = [...projectHrefs];
+      if (projDateStr) rightParts.push(projDateStr);
+      const rightCol = rightParts.length > 0 ? rightParts.join(" \\enspace\\textbar\\enspace ") : "";
 
       techStack = techStack.replace(/\s*[|–—]\s*Project\b/gi, "").replace(/\s+Project$/gi, "").trim();
 
       if (techStack) {
-        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(titlePart, allKnownLinks)}}}{${rightCol}}\n{\\small \\textit{${formatLatexLine(techStack, allKnownLinks)}}}\\\\[1pt]\n`;
+        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(titlePart, allKnownLinks)}}}{${rightCol}}\n{\\small \\textit{${formatLatexLine(techStack, allKnownLinks)}}}\\\\[1pt]\\nopagebreak[4]\n`;
       } else {
         bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(titlePart, allKnownLinks)}}}{${rightCol}}\n`;
       }
@@ -608,7 +732,7 @@ export function generateATSLatex(
     .join(" \\enspace\\textbar\\enspace ");
 
   const totalWords = cleanLines.join(" ").split(/\s+/).length;
-  const isMultiPage = cleanLines.length > 55 || totalWords > 850;
+  const isMultiPage = totalWords > 850 || cleanLines.length > 70;
 
   const docClass = isMultiPage ? "\\documentclass[a4paper,10pt]{article}" : "\\documentclass[a4paper,9pt]{extarticle}";
   const geometrySetting = isMultiPage
