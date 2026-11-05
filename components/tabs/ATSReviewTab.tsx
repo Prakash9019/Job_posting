@@ -37,7 +37,6 @@ import { scoreResume, cleanSmartTypography, extractRequirementsFromJobText } fro
 import { latexToPlainText } from "@/lib/ats/latex-text";
 import {
   generateATSLatex,
-  replaceLatexBulletFlexible,
   runAllRemediationPasses,
   resolvePlaceholder,
   escapeLatexForPatch,

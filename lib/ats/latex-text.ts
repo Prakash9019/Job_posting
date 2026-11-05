@@ -1,3 +1,5 @@
+import { sanitizeOcrText } from "./hyperlinks";
+
 /**
  * Parses balanced curly braces counting depth, properly handling escaped braces (\\{ and \\}).
  * Returns the inner content and the index immediately following the closing brace.
@@ -48,7 +50,8 @@ export function extractBalancedBraces(str: string, macroNames: string[]): string
       continue;
     }
     result += str.slice(lastIndex, macroStart);
-    result += `\n• ${parsed.content.trim()}`;
+    const cleanContent = parsed.content.trim().replace(/^[\s*•\-–—▪▫◦‣▸▹➢➣→+∗\\]+/, "");
+    result += `\n• ${cleanContent}`;
     lastIndex = parsed.endIndex;
     macroPattern.lastIndex = parsed.endIndex;
   }
@@ -121,8 +124,8 @@ export function latexToPlainText(latex: string): string {
     .replace(/\\(?:resumeDivider|enspace\\textbar\\enspace|textbar)/g, " | ")
     .replace(/\$?\s*\|\s*\$?/g, " | ")
     .replace(/\\hfill\s*/g, " | ")
-    // Convert standard \item to bullet •
-    .replace(/\\item\s+/g, "\n• ")
+    // Convert standard \item to bullet •, stripping any raw markdown bullets
+    .replace(/\\item\s*(?:[*\-•–—▪▫◦‣▸▹➢➣→+∗\\]+\s*)?/g, "\n• ")
     // Un-escape common LaTeX escapes
     .replace(/\\([&%$#_{}])/g, "$1")
     .replace(/\\textbackslash\{\}/g, "\\")
@@ -141,4 +144,6 @@ export function latexToPlainText(latex: string): string {
     .replace(/[ \t]+/g, " ")
     .replace(/\n\s*\n\s*\n+/g, "\n\n")
     .trim();
+
+  return sanitizeOcrText(body);
 }

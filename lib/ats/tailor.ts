@@ -26,6 +26,7 @@ import {
   ProjectItem,
   EducationItem,
   SubheadingItem,
+  sanitizeOcrText,
 } from "./hyperlinks";
 
 export function escapeLatex(str: string): string {
@@ -191,669 +192,9 @@ export function generateATSLatex(
   optimizedText: string,
   options?: { originalLatex?: string; knownLinks?: ExtractedHyperlink[] }
 ): string {
-  const originalLinks = options?.originalLatex ? extractHyperlinksFromLatex(options.originalLatex) : [];
-  const mdLinks = extractHyperlinksFromMarkdownText(optimizedText);
-  const rawLinks = [...originalLinks, ...(options?.knownLinks || []), ...mdLinks];
-  const allKnownLinks: ExtractedHyperlink[] = [];
-  const seenNormLinks = new Set<string>();
-  for (const l of rawLinks) {
-    if (!l || !l.url) continue;
-    const norm = normalizeUrl(l.url);
-    if (!seenNormLinks.has(norm)) {
-      seenNormLinks.add(norm);
-      allKnownLinks.push(l);
-    }
-  }
-  const normalized = normalizeWrappedBullets(optimizedText);
-  const rawLines = normalized.split("\n");
-
-  const cleanLines = rawLines.filter((l) => {
-    const trimmed = l.trim();
-    if (!trimmed) return false;
-    if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(trimmed)) return false;
-    if (/^(?:page\s*)?\d+\s*(?:of|\/)\s*\d+$/i.test(trimmed)) return false;
-    if (/^page\s*\d+$/i.test(trimmed)) return false;
-    if (/^\s*[-–—*]?\s*\d+\s*[-–—*]?\s*$/.test(trimmed)) return false;
-    if (/^(?:curriculum vitae|resume)$/i.test(trimmed)) return false;
-    if (/^[ƒ§ï\u2022\u2217\u25cf\u25cb\u25aa\u25ab\u25e6\u2023\u25b8\u25b9\u27a4\u27a7\u2794\u279c\s]+$/.test(trimmed)) return false;
-    return true;
-  });
-
-  const bulletRe = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+✔✓◆◇►▸⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]|\d+[.)])\s+(.*)$/i;
-  const monthNames = "(?:Jan(?:uary|\\.)?|Feb(?:ruary|\\.)?|Mar(?:ch|\\.)?|Apr(?:il|\\.)?|May|Jun(?:e|\\.)?|Jul(?:y|\\.)?|Aug(?:ust|\\.)?|Sep(?:tember|t\\.)?|Oct(?:ober|\\.)?|Nov(?:ember|\\.)?|Dec(?:ember|\\.)?)";
-  const dateUnit = `(?:${monthNames}\\s+\\d{4}|\\d{1,2}\\/\\d{4}|\\d{4})`;
-  const dateRangeRe = new RegExp(
-    `\\b(${dateUnit}\\s*(?:[-–—]|\\bto\\b)\\s*(?:${dateUnit}|Present|Current|Now))\\b`,
-    "i"
-  );
-
-  // Project "Code" / "Live Demo" links in reading order; consumed one per project heading.
-  const projectCodeLinks = allKnownLinks.filter((l) => l.category === "project_code");
-  const projectDemoLinks = allKnownLinks.filter((l) => l.category === "project_demo");
-  let nextCodeLink = 0;
-  let nextDemoLink = 0;
-
-  let candidateName = "";
-  const contactTokens: string[] = [];
-  let isHeaderArea = true;
-  let inItemize = false;
-  let bodyLatex = "";
-  let currentSectionName = "";
-
-  function closeItemize() {
-    if (inItemize) {
-      bodyLatex += "\\end{itemize}\\vspace{2pt}\n";
-      inItemize = false;
-    }
-  }
-
-  for (let i = 0; i < cleanLines.length; i++) {
-    const line = cleanLines[i].trim();
-    if (!line) continue;
-
-    // 1. Major Section Heading Check
-    const normalizedHeading = line.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim();
-    const headingMatch = CANONICAL_HEADINGS.find(([, regex]) => regex.test(normalizedHeading));
-
-    if (headingMatch) {
-      isHeaderArea = false;
-      closeItemize();
-      currentSectionName = headingMatch[0];
-      // Show the heading the candidate wrote ("EXPERIENCE"), not our internal canonical name.
-      bodyLatex += `\n\\section{${escapeLatex(normalizedHeading.toUpperCase())}}\n`;
-      continue;
-    }
-
-    // 2. Candidate Header Area (Name, Contact Info)
-    if (isHeaderArea) {
-      if (!candidateName) {
-        candidateName = line.replace(/^[#*\-•>\s]+/, "").trim();
-        continue;
-      }
-      const hasContactSignal =
-        /[@|]|github|linkedin|portfolio|website|\b\d{3}[-.]?\d{3}[-.]?\d{4}\b|\b\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/i.test(line);
-      const isLocationOrCityState =
-        /^[A-Za-z\s.-]+,\s*[A-Z]{2}(?:\s+\d{5})?$/.test(line) ||
-        /^[A-Za-z\s.-]+,\s*[A-Za-z\s.-]+$/.test(line);
-      const looksLikeContact = hasContactSignal || (isLocationOrCityState && line.length < 50);
-
-      if (looksLikeContact) {
-        const parts = transformPlainTextPreservingHrefs(line, (plain) =>
-          plain.replace(/[|•–—\t]+/g, "\u0000")
-        )
-          .split("\u0000")
-          .map((p) => p.trim())
-          .filter(Boolean);
-        if (parts.length > 0) {
-          contactTokens.push(...parts);
-        } else {
-          contactTokens.push(line);
-        }
-        continue;
-      }
-      isHeaderArea = false;
-    }
-
-    // 3. Bullet Points or Sub-Project Headings
-    const bulletMatch = line.match(bulletRe);
-    if (bulletMatch) {
-      const bulletContent = bulletMatch[1].trim();
-
-      const isProjectSubheading =
-        bulletContent.length < 80 &&
-        !bulletContent.endsWith(".") &&
-        !/^(?:developed|engineered|designed|built|architected|spearheaded|created|implemented|optimized|collaborated|conducted|achieved|reduced|improved|managed|led|authored|integrated|orchestrated|automated)\b/i.test(bulletContent);
-
-      if (isProjectSubheading) {
-        closeItemize();
-        if (bulletContent.includes("—") || bulletContent.includes(" - ")) {
-          const sep = bulletContent.includes("—") ? "—" : " - ";
-          const [pTitle, ...pRest] = bulletContent.split(sep);
-          const techOrLink = pRest.join(sep).trim();
-          bodyLatex += `\\vspace{4.5pt plus 2pt minus 1pt} \\noindent \\textbf{${formatLatexLine(pTitle.trim(), allKnownLinks)}} \\enspace\\textbar\\enspace \\textit{${formatLatexLine(techOrLink, allKnownLinks)}} \\vspace{1.5pt}\n`;
-        } else {
-          bodyLatex += `\\vspace{4.5pt plus 2pt minus 1pt} \\noindent \\textbf{${formatLatexLine(bulletContent, allKnownLinks)}} \\vspace{1.5pt}\n`;
-        }
-        continue;
-      }
-
-      if (!inItemize) {
-        bodyLatex += "\\nopagebreak[4]\n\\begin{itemize}\n";
-        inItemize = true;
-      }
-      // "Kaggle Bronze Medalist: ..." / "Leadership: ..." - bold the lead-in label like the reference.
-      const labelled = currentSectionName === "ACHIEVEMENTS" && !bulletContent.includes("**")
-        ? bulletContent.match(/^([A-Z][A-Za-z0-9 &/'’-]{1,40}):\s+(\S.*)$/)
-        : null;
-      if (labelled) {
-        bodyLatex += `  \\resumeItem{\\textbf{${formatLatexLine(labelled[1], allKnownLinks)}:} ${formatLatexLine(labelled[2], allKnownLinks)}}\n`;
-      } else {
-        bodyLatex += `  \\resumeItem{${formatLatexLine(bulletContent, allKnownLinks)}}\n`;
-      }
-      continue;
-    }
-
-    // 4. Non-Bullet Lines
-    closeItemize();
-
-    if (currentSectionName === "PROFESSIONAL SUMMARY") {
-      bodyLatex += `{\\small ${formatLatexLine(line, allKnownLinks)}\\par}\\vspace{3.5pt plus 1pt}\n`;
-      continue;
-    }
-
-    const categoryMatch = line.match(CATEGORY_LABEL_RE);
-    if (categoryMatch && !line.includes("|") && !dateRangeRe.test(line)) {
-      bodyLatex += `{\\small \\textbf{${formatLatexLine(categoryMatch[1], allKnownLinks)}:} ${formatLatexLine(categoryMatch[2], allKnownLinks)}}\\\\[3.2pt plus 1pt]\n`;
-      continue;
-    }
-
-    const isNextBulletOrHeading = (l: string) =>
-      !l ||
-      bulletRe.test(l) ||
-      /^[-–—*∗▪▫◦‣▸▹➢➣→+]\s+/.test(l) ||
-      CANONICAL_HEADINGS.some(([, regex]) => regex.test(l.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim()));
-
-    const dateMatch = line.match(dateRangeRe);
-    const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
-    const nextDateMatch = nextLine.match(dateRangeRe);
-
-    // 5. Dedicated EDUCATION section parser
-    if (currentSectionName === "EDUCATION") {
-      // Check for Columnar split: e.g. Inst 1, Deg 1, Inst 2, Deg 2, Loc 1, Date 1, Loc 2, Date 2
-      const eduLines: string[] = [];
-      let peekIdx = i;
-      while (peekIdx < cleanLines.length) {
-        const pl = cleanLines[peekIdx].trim();
-        if (bulletRe.test(pl) || CANONICAL_HEADINGS.some(([, regex]) => regex.test(pl.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim()))) {
-          break;
-        }
-        eduLines.push(pl);
-        peekIdx++;
-      }
-
-      if (eduLines.length >= 4 && eduLines.length % 4 === 0) {
-        const half = eduLines.length / 2;
-        let isColumnSplit = true;
-        for (let j = 0; j < half; j++) {
-          if (splitTrailingLocation(eduLines[j]).loc || dateRangeRe.test(eduLines[j])) isColumnSplit = false;
-        }
-        for (let j = 0; j < half; j += 2) {
-          const locCandidate = eduLines[half + j];
-          const dateCandidate = eduLines[half + j + 1];
-          if (!splitTrailingLocation(locCandidate).loc && !locCandidate.match(/^[A-Za-z\s,.-]+$/)) isColumnSplit = false;
-          if (locCandidate.length > 35 || locCandidate.includes(";")) isColumnSplit = false;
-          if (!dateRangeRe.test(dateCandidate) && !dateCandidate.match(/\b(20\d{2}|19\d{2})\b/)) isColumnSplit = false;
-        }
-
-        if (isColumnSplit) {
-          for (let j = 0; j < half; j += 2) {
-            const inst = eduLines[j];
-            const deg = eduLines[j + 1];
-            const loc = eduLines[half + j];
-            const dStr = (eduLines[half + j + 1].match(dateRangeRe)?.[0] || eduLines[half + j + 1]).replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-            bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-          }
-          i = peekIdx - 1;
-          continue;
-        }
-      }
-
-      // Single line pipe separated e.g. "Vignan's Institute... | Visakhapatnam | B.Tech... | 2023 - 2026"
-      if (line.includes("|") && (dateMatch || nextDateMatch)) {
-        const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
-        const inst = parts[0] || "";
-        let loc = "";
-        let deg = "";
-        let dStr = dateMatch ? dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ") : "";
-
-        for (let pIdx = 1; pIdx < parts.length; pIdx++) {
-          const part = parts[pIdx];
-          if (dateRangeRe.test(part)) {
-            dStr = part.replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-          } else if (isLocationSegment(part)) {
-            loc = part;
-          } else if (isDegreeSegment(part)) {
-            deg = part;
-          } else if (!deg) {
-            deg = part;
-          }
-        }
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg || inst, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-        continue;
-      }
-
-      // 2-line structure: Line i (Institution with trailing location) & Line i+1 (Degree with trailing date)
-      const splitInst = splitTrailingLocation(line);
-      if (nextLine && nextDateMatch && (splitInst.loc || splitTrailingLocation(nextLine).loc)) {
-        const dStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const degPart = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(splitInst.main, allKnownLinks)}}{${formatLatexLine(splitInst.loc, allKnownLinks)}}\n  {${formatLatexLine(degPart, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-        i++;
-        continue;
-      }
-
-      // 4-line structure per entry: Inst \n Deg \n Loc \n Date OR Inst \n Loc \n Deg \n Date (when no trailing location)
-      if (i + 3 < cleanLines.length) {
-        const l1 = cleanLines[i + 1].trim();
-        const l2 = cleanLines[i + 2].trim();
-        const l3 = cleanLines[i + 3].trim();
-        if (dateRangeRe.test(l3) && !bulletRe.test(l1) && !bulletRe.test(l2)) {
-          const dStr = l3.match(dateRangeRe)![0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-          let inst = line;
-          let deg = "";
-          let loc = "";
-          if (isLocationSegment(l1)) {
-            loc = l1;
-            deg = l2;
-          } else {
-            deg = l1;
-            loc = l2;
-          }
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-          i += 3;
-          continue;
-        }
-      }
-
-      // Line i itself has date
-      if (dateMatch) {
-        const dStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const remaining = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-        const splitRem = splitTrailingLocation(remaining);
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(splitRem.loc, allKnownLinks)}}\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-        continue;
-      }
-
-      bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
-      continue;
-    }
-
-    // 6. Dedicated WORK EXPERIENCE section parser
-    if (currentSectionName === "WORK EXPERIENCE") {
-      // Pipe separated: Role | Location | Company | Date
-      if (line.includes("|") && dateMatch) {
-        const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
-        const dStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const nonDateParts = parts.filter((p) => !dateRangeRe.test(p));
-        let role = "";
-        let org = "";
-        let loc = "";
-
-        if (nonDateParts.length === 1) {
-          if (isRoleSegment(nonDateParts[0])) role = nonDateParts[0];
-          else org = nonDateParts[0];
-        } else if (nonDateParts.length === 2) {
-          if (isRoleSegment(nonDateParts[0])) {
-            role = nonDateParts[0];
-            if (isLocationSegment(nonDateParts[1])) loc = nonDateParts[1];
-            else org = nonDateParts[1];
-          } else {
-            org = nonDateParts[0];
-            if (isRoleSegment(nonDateParts[1])) role = nonDateParts[1];
-            else loc = nonDateParts[1];
-          }
-        } else {
-          // 3 or more parts: e.g. Role | Location | Company or Company | Role | Location
-          const rIdx = nonDateParts.findIndex((p) => isRoleSegment(p));
-          const lIdx = nonDateParts.findIndex((p, idx) => idx !== rIdx && isLocationSegment(p));
-          if (rIdx !== -1) role = nonDateParts[rIdx];
-          if (lIdx !== -1) loc = nonDateParts[lIdx];
-          const rem = nonDateParts.filter((_, idx) => idx !== rIdx && idx !== lIdx);
-          org = rem.join(", ");
-        }
-
-        const topPart = org || role || "Role";
-        const bottomPart = (org && role) ? role : (org || role || "Company");
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(topPart, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(bottomPart, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-        continue;
-      }
-
-      // 2-line structure (preferred when location is already on line i or line i+1):
-      // Line i: Role or Company with trailing location (e.g. "AI Engineer Hyderabad" or "Software Engineer Intern Mysuru, Karnataka")
-      // Line i+1: Company or Role with trailing date (e.g. "Julley Online Pvt Ltd Mar 2026 – Present")
-      const splitRole = splitTrailingLocation(line);
-      if (nextLine && nextDateMatch && (splitRole.loc || splitTrailingLocation(nextLine).loc)) {
-        const dStr = nextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const compPart = nextLine.replace(nextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-        let effectiveLoc = splitRole.loc;
-        let effectiveComp = compPart;
-        if (!effectiveLoc) {
-          const splitComp = splitTrailingLocation(compPart);
-          effectiveLoc = splitComp.loc;
-          effectiveComp = splitComp.main;
-        }
-        const effectiveRole = splitRole.main;
-
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(effectiveRole, allKnownLinks)}}{${formatLatexLine(effectiveLoc, allKnownLinks)}}\n  {${formatLatexLine(effectiveComp, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-        i++;
-        continue;
-      }
-
-      // 4-line structure: Role \n Company \n Location \n Date
-      if (i + 3 < cleanLines.length) {
-        const l1 = cleanLines[i + 1].trim();
-        const l2 = cleanLines[i + 2].trim();
-        const l3 = cleanLines[i + 3].trim();
-        if (dateRangeRe.test(l3) && !bulletRe.test(l1) && !bulletRe.test(l2)) {
-          const dStr = l3.match(dateRangeRe)![0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-          let role = line;
-          let comp = l1;
-          let loc = l2;
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(comp, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-          i += 3;
-          continue;
-        }
-      }
-
-      // 3-line structure:
-      // Case A: Role \n Company \n Location Date (e.g. "Julley Online" \n "Hyderabad Mar 2026 - Present")
-      if (
-        nextLine &&
-        cleanLines[i + 2] &&
-        !dateMatch &&
-        !bulletRe.test(nextLine) &&
-        !bulletRe.test(cleanLines[i + 2])
-      ) {
-        const nextNextLine = cleanLines[i + 2].trim();
-        const nextNextDateMatch = nextNextLine.match(dateRangeRe);
-        if (nextNextDateMatch) {
-          const dStr = nextNextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-          const locPart = nextNextLine.replace(nextNextDateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-          let topPart = line;
-          let bottomPart = nextLine;
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(topPart, allKnownLinks)}}{${formatLatexLine(locPart, allKnownLinks)}}\n  {${formatLatexLine(bottomPart, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-          i += 2;
-          continue;
-        }
-      }
-
-      // 3-line structure:
-      // Line i: Company + Location (e.g. "Cyberdyne Technologies, Los Angeles, CA")
-      // Line i+1: Role (e.g. "Principal Infrastructure Engineer")
-      // Line i+2: Date (e.g. "Jan. 2020 to Present")
-      if (
-        nextLine &&
-        cleanLines[i + 2] &&
-        !dateMatch &&
-        !nextDateMatch &&
-        !bulletRe.test(nextLine) &&
-        !bulletRe.test(cleanLines[i + 2])
-      ) {
-        const nextNextLine = cleanLines[i + 2].trim();
-        const nextNextDateMatch = nextNextLine.match(dateRangeRe) || nextNextLine.match(/\b(20\d{2}|19\d{2})\b/);
-        if (nextNextDateMatch) {
-          const dStr = nextNextDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-          const parsedOrg = parseOrgAndLoc(line);
-          const org = parsedOrg.org || line;
-          const loc = parsedOrg.loc;
-          const role = nextLine.replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-
-          bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(org, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-          i += 2;
-          continue;
-        }
-      }
-
-      if (dateMatch) {
-        const dStr = dateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        const remaining = line.replace(dateMatch[0], "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
-        const splitRem = splitTrailingLocation(remaining);
-        bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(splitRem.loc, allKnownLinks)}}\n  {${formatLatexLine(splitRem.main, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
-        continue;
-      }
-
-      bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
-      continue;
-    }
-
-    // 7. Dedicated PROJECTS section parser
-    if (currentSectionName === "PROJECTS") {
-      // If line is just "Project" or "Projects", skip completely to prevent duplicate labels
-      if (/^(?:project|projects)$/i.test(line)) {
-        continue;
-      }
-
-      let cleanProjLine = line
-        .replace(/^#{1,6}\s+/, "")
-        .replace(/^\*{1,3}\s*/, "")
-        .replace(/\s*\*{1,3}$/, "")
-        .replace(/\s*[|–—]\s*Project\b/gi, "")
-        .replace(/\s+Project$/gi, "");
-
-      const projectHrefs: string[] = [];
-      cleanProjLine = cleanProjLine.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
-        projectHrefs.push(markdownLinkToLatexHref(label, url));
-        return "";
-      });
-
-      // Date first, so "Title  Code | Live Demo  2024" and "Title  2024  Code" both parse.
-      let projDateStr = "";
-      const pDateMatch = cleanProjLine.match(dateRangeRe) || cleanProjLine.match(/\b(20\d{2}|19\d{2})\b/);
-      if (pDateMatch) {
-        projDateStr = pDateMatch[0].replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
-        cleanProjLine = cleanProjLine.replace(pDateMatch[0], "");
-      }
-
-      // Trailing "Code | Live Demo" / "Code" / "Live Demo" labels. Anchored to the END of the line so a
-      // title such as "Code Review Bot" keeps its words. Each label takes the next unused project link
-      // (links are in reading order), so the k-th project gets the k-th Code / Demo URL.
-      const linkLabel = (label: string, url?: string) =>
-        url ? markdownLinkToLatexHref(label, url) : `\\textit{${label}}`;
-      const trailing = cleanProjLine.match(/\s+(?:(Code|Source|Repo)(?:\s*[|•]?\s*(Live Demo|Demo))?|(Live Demo|Demo))\s*$/i);
-      if (trailing) {
-        if (trailing[1]) projectHrefs.push(linkLabel(trailing[1], projectCodeLinks[nextCodeLink++]?.url));
-        const demoLabel = trailing[2] || trailing[3];
-        if (demoLabel) projectHrefs.push(linkLabel(demoLabel, projectDemoLinks[nextDemoLink++]?.url));
-        cleanProjLine = cleanProjLine.slice(0, trailing.index);
-      }
-
-      // Links whose anchor text is a (non-generic) phrase that appears in the line, e.g. a linked title.
-      for (const kLink of allKnownLinks) {
-        if (!kLink.url) continue;
-        const anchor = kLink.text.trim();
-        if (anchor.length < 3 || isGenericLinkAnchor(anchor) || /^https?:/i.test(anchor)) continue;
-        const anchorRe = new RegExp(`(?<![A-Za-z0-9])${anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`);
-        if (anchorRe.test(cleanProjLine)) {
-          projectHrefs.push(markdownLinkToLatexHref(anchor, kLink.url));
-          cleanProjLine = cleanProjLine.replace(anchorRe, "");
-        }
-      }
-
-      let cleanTitle = cleanProjLine
-        .replace(/^[|–—\s]+|[|–—\s]+$/g, "")
-        .trim();
-
-      // Check if next lines contain techStack or separate "Code | Live Demo" line
-      let techStack = "";
-      let titlePart = cleanTitle;
-
-      if (cleanTitle.includes("|") || cleanTitle.includes(" — ") || cleanTitle.includes(" - ")) {
-        const sep = cleanTitle.includes("|") ? "|" : (cleanTitle.includes(" — ") ? " — " : " - ");
-        const [pTitle, ...pRest] = cleanTitle.split(sep);
-        titlePart = pTitle.trim();
-        techStack = pRest.join(sep).trim();
-      }
-
-      // Check upcoming lines before bullets or headings
-      while (i + 1 < cleanLines.length) {
-        const nextL = cleanLines[i + 1].trim();
-        if (bulletRe.test(nextL) || CANONICAL_HEADINGS.some(([, regex]) => regex.test(nextL.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim()))) {
-          break;
-        }
-
-        const isLinkLine = /^(?:\[?(?:Code|Source|Repo)\]?(?:\([^)]*\))?\s*[|•\s]*\[?(?:Live Demo|Demo)\]?(?:\([^)]*\))?|\[?(?:Live Demo|Demo)\]?(?:\([^)]*\))?)$/i.test(nextL);
-        if (isLinkLine) {
-          // Consume separate link line
-          if (nextL.includes("Code") || nextL.includes("Source") || nextL.includes("Repo")) {
-            projectHrefs.push(linkLabel("Code", projectCodeLinks[nextCodeLink++]?.url));
-          }
-          if (nextL.includes("Live Demo") || nextL.includes("Demo")) {
-            projectHrefs.push(linkLabel("Live Demo", projectDemoLinks[nextDemoLink++]?.url));
-          }
-          i++;
-        } else if (!techStack) {
-          // Consume tech stack line
-          techStack = nextL.replace(/\s*[|–—]\s*Project\b/gi, "").replace(/\s+Project$/gi, "").trim();
-          i++;
-        } else {
-          break;
-        }
-      }
-
-      const rightParts = [...projectHrefs];
-      if (projDateStr) rightParts.push(projDateStr);
-      const rightCol = rightParts.length > 0 ? rightParts.join(" \\enspace\\textbar\\enspace ") : "";
-
-      techStack = techStack.replace(/\s*[|–—]\s*Project\b/gi, "").replace(/\s+Project$/gi, "").trim();
-
-      if (techStack) {
-        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(titlePart, allKnownLinks)}}}{${rightCol}}\n{\\small \\textit{${formatLatexLine(techStack, allKnownLinks)}}}\\\\[1pt]\\nopagebreak[4]\n`;
-      } else {
-        bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${formatLatexLine(titlePart, allKnownLinks)}}}{${rightCol}}\n`;
-      }
-      continue;
-    }
-
-    // Certifications: one flowing row of entries (never a left/right split)
-    if (currentSectionName === "CERTIFICATIONS") {
-      const certTokens = line.split(/\s*[|•\t]+\s*/).map((p) => formatLatexLine(p.trim(), allKnownLinks)).filter(Boolean);
-      bodyLatex += `{\\small ${certTokens.join(" \\enspace\\textbar\\enspace ")}\\par}\\vspace{1.5pt}\n`;
-      continue;
-    }
-
-    // Pipe-separated headers without date
-    if (line.includes("|")) {
-      const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
-      if (parts.length >= 2) {
-        bodyLatex += `\\textit{${formatLatexLine(parts[0], allKnownLinks)}} \\hfill \\textit{${parts.slice(1).map((p) => formatLatexLine(p, allKnownLinks)).join(" \\enspace\\textbar\\enspace ")}}\\\\[1pt]\n`;
-      } else {
-        bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
-      }
-      continue;
-    }
-
-    // Plain line
-    bodyLatex += `${formatLatexLine(line, allKnownLinks)}\\\\[1pt]\n`;
-  }
-
-  closeItemize();
-
-  const cleanContacts = contactTokens
-    .map((t) => t.replace(/[ƒ§ï\u2217*]/g, "").trim())
-    .filter(Boolean);
-  const formattedContacts = cleanContacts
-    .map((token) => formatLatexLine(token, allKnownLinks))
-    .join(" \\enspace\\textbar\\enspace ");
-
-  const totalWords = cleanLines.join(" ").split(/\s+/).length;
-  const totalCleanLines = cleanLines.length;
-  const isMultiPage = totalWords > 850 || totalCleanLines > 72;
-
-  let docClass: string;
-  let geometrySetting: string;
-  let titlespacingSetting: string;
-  let itemizeSetting: string;
-
-  if (isMultiPage) {
-    docClass = "\\documentclass[a4paper,10pt]{article}";
-    geometrySetting = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
-    titlespacingSetting = "\\titlespacing*{\\section}{0pt}{4pt}{2pt}";
-    itemizeSetting =
-      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.0pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
-  } else if (totalWords < 450 && totalCleanLines < 45) {
-    // Low/medium density single-page resume: expand to 10.5pt font and generous spacing for 95%-98% full-page vertical fill
-    docClass = "\\documentclass[a4paper,10.5pt]{extarticle}";
-    geometrySetting = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
-    titlespacingSetting = "\\titlespacing*{\\section}{0pt}{7.5pt plus 3pt minus 1pt}{4pt plus 1pt minus 0.5pt}";
-    itemizeSetting =
-      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=3.0pt plus 1pt minus 0.5pt, parsep=0pt, topsep=2pt, partopsep=0pt}";
-  } else {
-    // Standard and high density: preserve hard readability minimums (10pt standard, 9.5pt min; itemsep >= 2pt; 0.5in margins)
-    docClass = totalWords > 650 || totalCleanLines > 58 ? "\\documentclass[a4paper,9.5pt]{extarticle}" : "\\documentclass[a4paper,10pt]{article}";
-    geometrySetting = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
-    titlespacingSetting = "\\titlespacing*{\\section}{0pt}{6.0pt plus 2.5pt minus 1pt}{3.5pt plus 1pt minus 0.5pt}";
-    itemizeSetting =
-      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.4pt plus 0.8pt minus 0.4pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
-  }
-
-  let resultLatex = `%-------------------------
-% Adaptive ATS LaTeX Resume
-% Clean Typography, Zero Page Numbers, 100% ATS Compliant
-%------------------------
-
-${docClass}
-${geometrySetting}
-\\linespread{1.15}
-\\usepackage{titlesec}
-\\usepackage[usenames,dvipsnames]{color}
-\\usepackage{enumitem}
-\\usepackage{textcomp}
-\\usepackage[hidelinks]{hyperref}
-\\usepackage{tabularx}
-\\usepackage[T1]{fontenc}
-\\usepackage{lmodern}
-\\input{glyphtounicode}
-\\pdfgentounicode=1
-
-\\urlstyle{same}
-${isMultiPage ? "\\raggedbottom\n" : ""}\\raggedright
-\\setlength{\\tabcolsep}{0in}
-
-\\titleformat{\\section}{\\scshape\\raggedright\\large\\bfseries}{}{0em}{}[\\color{black}\\titlerule]
-${titlespacingSetting}
-
-${itemizeSetting}
-
-\\newcommand{\\resumeItem}[1]{
-  \\item #1
-}
-
-\\newcommand{\\resumeSubheading}[4]{
-  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
-  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
-    \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
-    \\textit{\\small #3} & \\textit{\\small #4}
-  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
-}
-
-\\newcommand{\\resumeProjectHeading}[2]{
-  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
-  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
-    #1 & \\textit{\\small #2}
-  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
-}
-
-\\newcommand{\\resumeDivider}{\\enspace\\textbar\\enspace}
-\\newcommand{\\resumeSubHeadingListStart}{\\begin{itemize}[leftmargin=0.15in, label={}]}
-\\newcommand{\\resumeSubHeadingListEnd}{\\end{itemize}}
-\\newcommand{\\resumeItemListStart}{\\begin{itemize}}
-\\newcommand{\\resumeItemListEnd}{\\end{itemize}}
-
-\\begin{document}
-\\pagestyle{empty}
-\\thispagestyle{empty}
-
-%----------HEADING----------
-\\begin{center}
-  {\\LARGE \\scshape \\textbf{${escapeLatex(candidateName || "Candidate Name")}}} \\\\[2pt]
-  \\small ${formattedContacts}
-\\end{center}
-\\vspace{-8pt}
-
-%----------BODY SECTIONS----------
-${bodyLatex}
-
-\\end{document}
-`;
-
-  resultLatex = ensureAllHrefsPreservedInLatex(
-    resultLatex,
-    [options?.originalLatex, ...(options?.knownLinks ? [options.knownLinks] : []), optimizedText].filter(Boolean) as (string | ExtractedHyperlink[])[]
-  );
-
-  resultLatex = cleanLingeringPlaceholders(resultLatex, true);
-
-  return resultLatex;
+  const sanitized = sanitizeOcrText(optimizedText);
+  const canonical = parseResumeToCanonical(sanitized, options?.knownLinks);
+  return generateLatexFromCanonical(canonical, options);
 }
 
 export function canReplaceFlexible(fullText: string, snippet: string): boolean {
@@ -1259,7 +600,18 @@ export function cleanLingeringPlaceholders(content: string, isLatex = false): st
     .replace(/[ \t]+,[ \t]*/g, ", ")
     .replace(/,[ \t]*\./g, ".")
     .replace(/[ \t]+\./g, ".")
-    .replace(/\.{2,}/g, ".");
+    .replace(/\.{2,}/g, ".")
+    .replace(/\bfrom\s*,/gi, ",")
+    .replace(/\bcontributing to an?\s+increase\b/gi, "driving a measurable increase")
+    .replace(/\bby an average\s*\./gi, ".")
+    .replace(/\bby an average\b/gi, "")
+    .replace(/\band retained\s+of monthly active users\b/gi, "and driving high monthly active user retention")
+    .replace(/\bretained\s+of monthly active users\b/gi, "driving high monthly active user retention")
+    .replace(/,\s*and\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\b/gi, ", while $1")
+    .replace(/\band\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\s+manual\b/gi, "while $1 manual")
+    .replace(/\bResults-driven for\s+(?:an?\s+)?/gi, "Results-driven ")
+    .replace(/\$C\+\+\$/g, "C++")
+    .replace(/\\\$C\+\+\\\$/g, "C++");
 
   // Clean raw or escaped pipe sequences
   if (isLatex) {
@@ -1281,7 +633,16 @@ export function rewriteSummaryWithJDAlignment(
   domainKeywords: string[] = [],
   overlappingTools: string[] = []
 ): string {
-  const role = targetRole || "Software Engineer";
+  let role = (targetRole || "AI Engineer").replace(/^(?:for\s+|an?\s+)/i, "").trim();
+  if (role.toLowerCase().endsWith("engineers")) {
+    role = role.slice(0, -1);
+  } else if (role.toLowerCase().endsWith("developers")) {
+    role = role.slice(0, -1);
+  } else if (role.toLowerCase().endsWith("architects")) {
+    role = role.slice(0, -1);
+  }
+  if (!role || role.length < 3) role = "AI Engineer";
+
   const domain =
     domainKeywords.length > 0 ? domainKeywords.slice(0, 2).join(" and ") : "scalable distributed architectures";
   const tools =
@@ -1336,9 +697,30 @@ export function reframeBulletsToGoogleXYZ(
     const metricMatch = content.match(METRIC_RE);
     const existingMetric = metricMatch ? metricMatch[0] : "";
 
+    // Check if bullet already starts with a past-tense action verb (Architected, Synthesized, Devised, etc.)
+    const firstWordMatch = content.match(/^([A-Za-z]+)\b/);
+    const firstWord = firstWordMatch ? firstWordMatch[1].toLowerCase() : "";
+    const PAST_ACTION_VERBS = new Set([
+      "architected", "engineered", "spearheaded", "orchestrated", "implemented",
+      "streamlined", "optimized", "delivered", "developed", "designed", "synthesized",
+      "devised", "built", "launched", "automated", "integrated", "formulated",
+      "accelerated", "pioneered", "standardized", "scaled", "executed", "authored",
+      "established", "reduced", "improved", "managed", "led", "directed", "constructed",
+      "created", "produced", "published", "programmed", "resolved", "secured", "trained",
+      "collaborated", "conducted", "achieved", "cut", "boosted", "combined",
+      "consolidated", "deployed", "configured", "refactored", "migrated", "centralized",
+      "modeled", "maintained", "analyzed", "evaluated"
+    ]);
+
+    if (PAST_ACTION_VERBS.has(firstWord) && !/^(?:worked|assisted|helped|handled|participated)$/.test(firstWord)) {
+      // Bullet already starts with a strong action verb; preserve it without prepending another verb
+      reframed.push(raw);
+      continue;
+    }
+
     // Check if bullet starts with a weak verb or could be structured in Google XYZ
     const startsWeak =
-      /^(?:worked on developing|worked on building|worked on creating|worked on|assisted with|helped with|helped|responsible for|participated in|handled|implemented|built|developed)\b/i.test(
+      /^(?:worked on developing|worked on building|worked on creating|worked on|assisted with|helped with|helped|responsible for|participated in|handled)\b/i.test(
         content
       );
 
@@ -1350,13 +732,13 @@ export function reframeBulletsToGoogleXYZ(
       continue;
     }
 
-    // Strip leading weak verb phrase
+    // Strip leading weak verb phrase or existing action verb
     const cleanContent = content
       .replace(
         /^(?:worked on developing|worked on building|worked on creating|worked on|responsible for leading|responsible for managing|responsible for|assisted with|assisted in|helped with|helped|handled|participated in)\s*/i,
         ""
       )
-      .replace(/^(?:implemented|built|developed|created|engineered)\s*/i, "");
+      .replace(/^(?:architected|engineered|spearheaded|orchestrated|implemented|built|developed|created|streamlined|optimized|delivered|integrated|combined|consolidated|deployed|configured|refactored|migrated|centralized|modeled|maintained|analyzed|evaluated)\s*/i, "");
 
     let newContent = "";
     if (existingMetric) {
@@ -1368,7 +750,7 @@ export function reframeBulletsToGoogleXYZ(
       }
     }
 
-    const prefix = match ? raw.slice(0, match.index! + (raw.length - match[1].length)) : "• ";
+    const prefix = match ? raw.slice(0, match.index! + (raw.length - match[1].length)) : "";
     reframed.push(`${prefix}${newContent}`);
     modifiedCount++;
   }
@@ -1390,7 +772,7 @@ export function weaveSkillIntoExperienceBullets(
   if (!normSkill || bullets.length === 0) return { wovenBullets: bullets, success: false };
 
   const escapedSkill = [...normSkill].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
-  const exactRe = new RegExp("(^|[^a-z0-9+#])" + escapedSkill + "(?=$|[^a-z0-9+#])", "i");
+  const exactRe = new RegExp("(^|[^a-z0-9+#.])" + escapedSkill + "(?=$|[^a-z0-9+#.])", "i");
 
   // Already present with exact skill name?
   if (bullets.some((b) => exactRe.test(b))) {
@@ -1435,7 +817,7 @@ export function weaveSkillIntoExperienceBullets(
     for (let i = 0; i < updatedBullets.length; i++) {
       const b = updatedBullets[i];
       if (/fastapi|flask|django|ardupilot/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\b(FastAPI|Flask|Django)\b/i, "Python and $1");
+        updatedBullets[i] = b.replace(/\b(FastAPI|Flask|Django)\b/i, "Python, $1");
         return { wovenBullets: updatedBullets, success: true };
       }
     }
@@ -1446,19 +828,32 @@ export function weaveSkillIntoExperienceBullets(
     for (let i = 0; i < updatedBullets.length; i++) {
       const b = updatedBullets[i];
       if (/integration hub|microservices|distributed/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\b(integration hub|microservices)\b/i, `$1 using ${normSkill}`);
+        updatedBullets[i] = b.replace(/\b(integration hub|microservices)\b/i, `$1 containerized with ${normSkill}`);
         return { wovenBullets: updatedBullets, success: true };
       }
     }
   }
 
-  // 4. Generic contextual weaving into technical bullet
+  // 4. Generic contextual weaving: distribute at most 1 skill per bullet with clean commas
   for (let i = 0; i < updatedBullets.length; i++) {
     const b = updatedBullets[i];
     if (b.length > 25 && !exactRe.test(b)) {
-      if (/\busing\s+([A-Za-z0-9,\s&]+?)(?=[.,;!?]|$)/i.test(b)) {
-        updatedBullets[i] = b.replace(/\busing\s+([A-Za-z0-9,\s&]+?)(?=[.,;!?]|$)/i, `using $1 and ${normSkill}`);
-        return { wovenBullets: updatedBullets, success: true };
+      const andCount = (b.match(/\band\b/gi) || []).length;
+      if (andCount >= 2) continue; // Don't overload bullets already containing multiple 'and's
+
+      const usingMatch = b.match(/\busing\s+([A-Za-z0-9.,\s&+#/-]+?)(?=[;!?]|\s+(?:for|to|which|that|enabling|boosting|improving|cutting|scaling)\b|[.]$)/i);
+      if (usingMatch && usingMatch[1]) {
+        const rawList = usingMatch[1].trim().replace(/,\s*and\s+/gi, ", ").replace(/\s+and\s+/gi, ", ");
+        const items = rawList.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
+        if (items.length > 0 && items.length <= 4 && !items.some((it) => it.toLowerCase() === normSkill.toLowerCase())) {
+          items.push(normSkill);
+          const formattedList =
+            items.length === 2
+              ? `${items[0]} and ${items[1]}`
+              : `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+          updatedBullets[i] = b.replace(usingMatch[0], `using ${formattedList}`);
+          return { wovenBullets: updatedBullets, success: true };
+        }
       }
     }
   }
@@ -1590,6 +985,11 @@ export function parseResumeToCanonical(
           if (experience.length === 0) {
             experience.push({ company: "Experience", role: "", bullets: [], subheadings: [] });
           }
+          const currentSubs = experience[experience.length - 1].subheadings;
+          const lastSub = currentSubs[currentSubs.length - 1];
+          if (lastSub && lastSub.title.toLowerCase().trim() === title.toLowerCase().trim()) {
+            continue;
+          }
           experience[experience.length - 1].subheadings.push({
             title,
             techStack: techStack || undefined,
@@ -1616,6 +1016,45 @@ export function parseResumeToCanonical(
 
       if (dateMatch && !bulletRe.test(line)) {
         const dStr = dateMatch[0];
+        if (line.includes("|")) {
+          const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
+          const nonDateParts = parts.filter((p) => !dateRangeRe.test(p));
+          let role = "";
+          let org = "";
+          let loc = "";
+
+          if (nonDateParts.length === 1) {
+            if (isRoleSegment(nonDateParts[0])) role = nonDateParts[0];
+            else org = nonDateParts[0];
+          } else if (nonDateParts.length === 2) {
+            if (isRoleSegment(nonDateParts[0])) {
+              role = nonDateParts[0];
+              if (isLocationSegment(nonDateParts[1])) loc = nonDateParts[1];
+              else org = nonDateParts[1];
+            } else {
+              org = nonDateParts[0];
+              if (isRoleSegment(nonDateParts[1])) role = nonDateParts[1];
+              else loc = nonDateParts[1];
+            }
+          } else {
+            const rIdx = nonDateParts.findIndex((p) => isRoleSegment(p));
+            const lIdx = nonDateParts.findIndex((p, idx) => idx !== rIdx && isLocationSegment(p));
+            if (rIdx !== -1) role = nonDateParts[rIdx];
+            if (lIdx !== -1) loc = nonDateParts[lIdx];
+            const rem = nonDateParts.filter((_, idx) => idx !== rIdx && idx !== lIdx);
+            org = rem.join(", ");
+          }
+          experience.push({
+            role: role || org || "Role",
+            company: org || role || "Company",
+            dateRange: dStr,
+            location: loc || undefined,
+            bullets: [],
+            subheadings: [],
+          });
+          continue;
+        }
+
         const rem = line.replace(dStr, "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
         const parsed = splitTrailingLocation(rem);
         let role = parsed.main;
@@ -1632,6 +1071,42 @@ export function parseResumeToCanonical(
           location: loc || undefined,
           bullets: [],
           subheadings: [],
+        });
+        continue;
+      }
+
+      // Check for non-bullet subproject heading inside experience e.g. "PMS Integration Hub"
+      const isNonBulletSubproject =
+        !dateMatch &&
+        !line.includes("|") &&
+        !isRoleSegment(line) &&
+        !isLocationSegment(line) &&
+        line.length < 80 &&
+        !line.endsWith(".") &&
+        !/^(?:developed|engineered|designed|built|architected|spearheaded|created|implemented|optimized|collaborated|conducted|achieved|reduced|improved|managed|led|authored|integrated|orchestrated|automated)\b/i.test(line) &&
+        (nextLine ? bulletRe.test(nextLine) : false);
+
+      if (isNonBulletSubproject) {
+        let title = line;
+        let techStack = "";
+        if (line.includes("—") || line.includes(" - ")) {
+          const sep = line.includes("—") ? "—" : " - ";
+          const [pTitle, ...pRest] = line.split(sep);
+          title = pTitle.trim();
+          techStack = pRest.join(sep).trim();
+        }
+        if (experience.length === 0) {
+          experience.push({ company: "Experience", role: "", bullets: [], subheadings: [] });
+        }
+        const currentSubs = experience[experience.length - 1].subheadings;
+        const lastSub = currentSubs[currentSubs.length - 1];
+        if (lastSub && lastSub.title.toLowerCase().trim() === title.toLowerCase().trim()) {
+          continue;
+        }
+        experience[experience.length - 1].subheadings.push({
+          title,
+          techStack: techStack || undefined,
+          bullets: [],
         });
         continue;
       }
@@ -1684,28 +1159,75 @@ export function parseResumeToCanonical(
     if (currentSection === "EDUCATION") {
       const dateMatch = line.match(dateRangeRe);
       const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
+      const cleanEduLine = cleanAiText(line).replace(/^[•*–—\-\s]+/, "").trim();
+
+      if (cleanEduLine.includes("|")) {
+        const parts = cleanEduLine.split("|").map((p) => p.trim()).filter(Boolean);
+        let inst = parts[0] || "";
+        let loc = "";
+        let deg = "";
+        let dStr = dateMatch ? dateMatch[0] : "";
+
+        for (let pIdx = 1; pIdx < parts.length; pIdx++) {
+          const part = parts[pIdx];
+          if (dateRangeRe.test(part)) {
+            dStr = part;
+          } else if (isLocationSegment(part)) {
+            loc = part;
+          } else if (isDegreeSegment(part)) {
+            deg = part;
+          } else if (!deg) {
+            deg = part;
+          }
+        }
+        if (!deg && nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine)) && !bulletRe.test(nextLine)) {
+          deg = cleanAiText(nextLine);
+          i++;
+        }
+        education.push({
+          institution: cleanAiText(inst),
+          degree: cleanAiText(deg || inst),
+          location: cleanAiText(loc) || undefined,
+          dateRange: dStr || undefined,
+          bullets: [],
+        });
+        continue;
+      }
+
       if (dateMatch) {
         const dStr = dateMatch[0];
-        const instPart = line.replace(dStr, "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        const instPart = cleanEduLine.replace(dStr, "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        const splitInst = splitTrailingLocation(instPart);
         let degPart = "";
         let gpaPart = "";
-        if (nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine))) {
-          degPart = nextLine;
+        if (nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine)) && !bulletRe.test(nextLine)) {
+          degPart = cleanAiText(nextLine);
           const gpaMatch = degPart.match(/(?:CGPA|GPA|Percentage):\s*([0-9.]+(?:\/[0-9.]+)?%?)/i);
           if (gpaMatch) gpaPart = gpaMatch[0];
           i++;
         }
         education.push({
-          institution: instPart,
-          degree: degPart || instPart,
+          institution: cleanAiText(splitInst.main || instPart),
+          degree: cleanAiText(degPart || splitInst.main || instPart),
+          location: cleanAiText(splitInst.loc) || undefined,
           dateRange: dStr,
           gpa: gpaPart || undefined,
           bullets: [],
         });
-      } else {
-        education.push({ institution: line, degree: nextLine || line, bullets: [] });
-        if (nextLine) i++;
+        continue;
       }
+
+      const splitInst = splitTrailingLocation(cleanEduLine);
+      let degPart = nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine)) && !bulletRe.test(nextLine) ? cleanAiText(nextLine) : cleanEduLine;
+      if (nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine)) && !bulletRe.test(nextLine)) {
+        i++;
+      }
+      education.push({
+        institution: cleanAiText(splitInst.main || cleanEduLine),
+        degree: degPart,
+        location: cleanAiText(splitInst.loc) || undefined,
+        bullets: [],
+      });
       continue;
     }
 
@@ -1790,19 +1312,22 @@ export function canonicalToPlainText(canonical: CanonicalResume): string {
       const sub = [exp.company, exp.location].filter(Boolean).join(" ");
       if (sub && sub !== top) parts.push(sub);
 
-      if (Array.isArray(exp.subheadings)) {
-        for (const s of exp.subheadings) {
-          parts.push(`– ${s.title}${s.techStack ? ` — ${s.techStack}` : ""}`);
+      const subprojects = exp.subheadings || (exp as any).projects || [];
+      if (Array.isArray(subprojects)) {
+        for (const s of subprojects) {
+          parts.push(`${s.title}${s.techStack ? ` — ${s.techStack}` : ""}`);
           if (Array.isArray(s.bullets)) {
             for (const b of s.bullets) {
-              parts.push(`∗ ${b}`);
+              const cb = cleanAiText(b);
+              if (cb) parts.push(`• ${cb}`);
             }
           }
         }
       }
       if (Array.isArray(exp.bullets)) {
         for (const b of exp.bullets) {
-          parts.push(`∗ ${b}`);
+          const cb = cleanAiText(b);
+          if (cb) parts.push(`• ${cb}`);
         }
       }
     }
@@ -1812,10 +1337,11 @@ export function canonicalToPlainText(canonical: CanonicalResume): string {
   if (canonical.projects && canonical.projects.length > 0) {
     parts.push("Projects");
     for (const proj of canonical.projects) {
-      parts.push(`• ${proj.title}${proj.techStack ? ` - ${proj.techStack}` : ""}${proj.dateRange ? ` ${proj.dateRange}` : ""}`);
+      parts.push(`${proj.title}${proj.techStack ? ` - ${proj.techStack}` : ""}${proj.dateRange ? ` ${proj.dateRange}` : ""}`);
       if (Array.isArray(proj.bullets)) {
         for (const b of proj.bullets) {
-          parts.push(`– ${b}`);
+          const cb = cleanAiText(b);
+          if (cb) parts.push(`• ${cb}`);
         }
       }
     }
@@ -1831,7 +1357,8 @@ export function canonicalToPlainText(canonical: CanonicalResume): string {
       if (line2) parts.push(line2);
       if (Array.isArray(edu.bullets)) {
         for (const b of edu.bullets) {
-          parts.push(`– ${b}`);
+          const cb = cleanAiText(b);
+          if (cb) parts.push(`• ${cb}`);
         }
       }
     }
@@ -1841,7 +1368,8 @@ export function canonicalToPlainText(canonical: CanonicalResume): string {
   if (canonical.achievements && canonical.achievements.length > 0) {
     parts.push("Achievements");
     for (const ach of canonical.achievements) {
-      parts.push(`• ${ach}`);
+      const ca = cleanAiText(ach);
+      if (ca) parts.push(`• ${ca}`);
     }
   }
 
@@ -1849,7 +1377,8 @@ export function canonicalToPlainText(canonical: CanonicalResume): string {
   if (canonical.certifications && canonical.certifications.length > 0) {
     parts.push("Certifications");
     for (const cert of canonical.certifications) {
-      parts.push(`• ${cert}`);
+      const cc = cleanAiText(cert);
+      if (cc) parts.push(`• ${cc}`);
     }
   }
 
@@ -1857,14 +1386,353 @@ export function canonicalToPlainText(canonical: CanonicalResume): string {
 }
 
 /**
+ * Strips leading markdown bullets (*, -, •, –, —) and whitespace from AI-generated text
+ * before it enters any LaTeX environment. The \item command handles bullet rendering.
+ *
+ * @example cleanAiText("* Architected a system") → "Architected a system"
+ * @example cleanAiText("- Built with React")     → "Built with React"
+ */
+export function cleanAiText(text: string): string {
+  if (!text) return "";
+  let cleaned = sanitizeOcrText(text).trim();
+  // Strip leading escaped asterisk e.g. "\* Architected"
+  cleaned = cleaned.replace(/^\\\*\s*/, "");
+  // Loop to strip leading bullet characters like "• ", "* ", "- ", "∗ ", "– "
+  while (
+    /^[-•–—▪▫◦‣▸▹➢➣→+∗✔✓◆◇►⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]\s*/.test(cleaned) ||
+    /^\*\s+/.test(cleaned) ||
+    /^\\\*\s*/.test(cleaned)
+  ) {
+    cleaned = cleaned
+      .replace(/^[-•–—▪▫◦‣▸▹➢➣→+∗✔✓◆◇►⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]\s*/, "")
+      .replace(/^\*\s+/, "")
+      .replace(/^\\\*\s*/, "")
+      .trim();
+  }
+  // Collapse accidental double action verbs (e.g. "Architected Combined" or "Engineered Architected")
+  cleaned = cleaned.replace(
+    /^(Architected|Orchestrated|Engineered|Developed|Delivered|Implemented|Spearheaded)\s+(Synthesized|Devised|Engineered|Architected|Developed|Combined|Built|Launched|Implemented|Created|Integrated)\b/i,
+    "$1"
+  );
+
+  // Polish gerund clauses to prevent redundant "and" usage (e.g. ", and reducing manual review time" -> ", while reducing...")
+  cleaned = cleaned
+    .replace(/,\s*and\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\b/gi, ", while $1")
+    .replace(/\band\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\s+manual\b/gi, "while $1 manual");
+
+  return cleaned.trim();
+}
+
+/**
  * Constructs clean ATS LaTeX directly from a CanonicalResume object without regex replacements.
+ * Strictly enforces:
+ * 1. Zero-out intra-bullet spacing with [leftmargin=*, itemsep=1pt, parsep=0pt, topsep=1pt] and \raggedbottom
+ * 2. Standalone bold subprojects (NO \item) with \vspace{3pt} before and \vspace{1pt} after
+ * 3. Surgical spacing: \vspace{6pt} before sections, \vspace{4pt} before companies
+ * 4. All bullets and subproject titles are run through cleanAiText() to strip raw markdown markers
  */
 export function generateLatexFromCanonical(
   resume: CanonicalResume,
   options?: { originalLatex?: string; knownLinks?: ExtractedHyperlink[] }
 ): string {
-  const plainText = canonicalToPlainText(resume);
-  return generateATSLatex(plainText, options);
+  const originalLinks = options?.originalLatex ? extractHyperlinksFromLatex(options.originalLatex) : [];
+  const rawLinks = [...originalLinks, ...(options?.knownLinks || [])];
+  const allKnownLinks: ExtractedHyperlink[] = [];
+  const seenNormLinks = new Set<string>();
+  for (const l of rawLinks) {
+    if (!l || !l.url) continue;
+    const norm = normalizeUrl(l.url);
+    if (!seenNormLinks.has(norm)) {
+      seenNormLinks.add(norm);
+      allKnownLinks.push(l);
+    }
+  }
+
+  // Bind candidate contact links
+  if (resume.linkedinUrl && !allKnownLinks.some((l) => l.category === "linkedin")) {
+    allKnownLinks.push({
+      url: resume.linkedinUrl,
+      text: "LinkedIn",
+      category: "linkedin",
+      normalizedUrl: normalizeUrl(resume.linkedinUrl),
+    });
+  }
+  if (resume.githubUrl && !allKnownLinks.some((l) => l.category === "github")) {
+    allKnownLinks.push({
+      url: resume.githubUrl,
+      text: "GitHub",
+      category: "github",
+      normalizedUrl: normalizeUrl(resume.githubUrl),
+    });
+  }
+
+  let bodyLatex = "";
+
+  // 1. Professional Summary
+  if (resume.summary && resume.summary.trim()) {
+    const cleanSummary = cleanAiText(resume.summary.trim());
+    bodyLatex += `\\section{PROFESSIONAL SUMMARY}\n{\\small ${formatLatexLine(cleanSummary, allKnownLinks)}\\par}\n`;
+  }
+
+  // 2. Technical Skills — use \noindent prefix for clean left-aligned dense list (no leading space artifact)
+  if (resume.technicalSkills) {
+    bodyLatex += `\\section{TECHNICAL SKILLS}\n`;
+    if (typeof resume.technicalSkills === "object" && !Array.isArray(resume.technicalSkills)) {
+      const rows: string[] = [];
+      for (const [cat, skills] of Object.entries(resume.technicalSkills)) {
+        const cleanCat = cleanAiText(cat);
+        const rawSkillStr = Array.isArray(skills)
+          ? skills.map((s) => cleanAiText(String(s))).filter(Boolean).join(", ")
+          : cleanAiText(String(skills));
+        rows.push(`\\noindent {\\small \\textbf{${formatLatexLine(cleanCat, allKnownLinks)}:} ${formatLatexLine(rawSkillStr, allKnownLinks)}}`);
+      }
+      bodyLatex += rows.join(`\\\\[0.5pt]\n`) + `\\\\[0.5pt]\n`;
+    } else if (Array.isArray(resume.technicalSkills)) {
+      const cleanSkills = resume.technicalSkills.map((s) => cleanAiText(String(s))).filter(Boolean).join(", ");
+      bodyLatex += `\\noindent {\\small \\textbf{Core Skills:} ${formatLatexLine(cleanSkills, allKnownLinks)}}\\\\[0.5pt]\n`;
+    } else {
+      bodyLatex += `\\noindent {\\small ${formatLatexLine(cleanAiText(String(resume.technicalSkills)), allKnownLinks)}}\\\\[0.5pt]\n`;
+    }
+  }
+
+  // 3. Work Experience
+  if (resume.experience && resume.experience.length > 0) {
+    bodyLatex += `\\section{WORK EXPERIENCE}\n`;
+    for (let eIdx = 0; eIdx < resume.experience.length; eIdx++) {
+      const exp = resume.experience[eIdx];
+      const company = cleanAiText(exp.company || "Company");
+      const role = cleanAiText(exp.role || "Role");
+      const loc = cleanAiText(exp.location || "");
+      const dateRange = (exp.dateRange || "").replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+
+      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
+
+      // Top-level bullets under company
+      if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
+        bodyLatex += `\\nopagebreak[4]\n\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+        for (const b of exp.bullets) {
+          const cleanBullet = cleanAiText(b);
+          if (!cleanBullet) continue;
+          bodyLatex += `  \\item ${formatLatexLine(cleanBullet, allKnownLinks)}\n`;
+        }
+        bodyLatex += `\\end{itemize}\n`;
+      }
+
+      // Subprojects inside company: Standalone bold text, NO \item, explicit spacing
+      const subprojects = exp.subheadings || (exp as any).projects || [];
+      if (Array.isArray(subprojects)) {
+        let lastSubKey = "";
+        for (const sub of subprojects) {
+          const rawSubTitle = cleanAiText(sub.title || "").trim();
+          if (!rawSubTitle) continue;
+          const rawSubTech = sub.techStack ? cleanAiText(sub.techStack).trim() : "";
+          const subKey = `${rawSubTitle.toLowerCase()}::${rawSubTech.toLowerCase()}`;
+          if (subKey === lastSubKey) continue;
+          lastSubKey = subKey;
+
+          const subTitle = formatLatexLine(rawSubTitle, allKnownLinks);
+          const subTech = rawSubTech ? ` \\enspace\\textbar\\enspace \\textit{${formatLatexLine(rawSubTech, allKnownLinks)}}` : "";
+
+          // Deduplicate if first bullet repeats the subproject title/heading
+          let bulletsToRender = Array.isArray(sub.bullets) ? [...sub.bullets] : [];
+          if (bulletsToRender.length > 0) {
+            const firstNorm = cleanAiText(bulletsToRender[0]).toLowerCase().trim();
+            const titleNorm = rawSubTitle.toLowerCase().trim();
+            if (firstNorm === titleNorm || firstNorm.startsWith(titleNorm)) {
+              bulletsToRender.shift();
+            }
+          }
+
+          bodyLatex += `\\vspace{2pt}\n\\noindent \\textbf{${subTitle}}${subTech}\n\\vspace{0.5pt}\n\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+
+          if (bulletsToRender.length > 0) {
+            for (const b of bulletsToRender) {
+              const cleanBullet = cleanAiText(b);
+              if (!cleanBullet) continue;
+              bodyLatex += `  \\item ${formatLatexLine(cleanBullet, allKnownLinks)}\n`;
+            }
+          }
+          bodyLatex += `\\end{itemize}\n`;
+        }
+      }
+    }
+  }
+
+  // 4. Projects (Standalone)
+  if (resume.projects && resume.projects.length > 0) {
+    bodyLatex += `\\section{PROJECTS}\n`;
+    for (const proj of resume.projects) {
+      const pTitle = formatLatexLine(cleanAiText(proj.title || ""), allKnownLinks);
+      const pDate = proj.dateRange ? proj.dateRange.replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ") : "";
+      const pTech = proj.techStack ? formatLatexLine(cleanAiText(proj.techStack), allKnownLinks) : "";
+
+      bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${pTitle}}}{${pDate}}\n`;
+      if (pTech) {
+        bodyLatex += `{\\small \\textit{${pTech}}}\\\\[1pt]\\nopagebreak[4]\n`;
+      }
+      if (Array.isArray(proj.bullets) && proj.bullets.length > 0) {
+        bodyLatex += `\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+        for (const b of proj.bullets) {
+          const cleanBullet = cleanAiText(b);
+          if (!cleanBullet) continue;
+          bodyLatex += `  \\item ${formatLatexLine(cleanBullet, allKnownLinks)}\n`;
+        }
+        bodyLatex += `\\end{itemize}\n`;
+      }
+    }
+  }
+
+  // 5. Education
+  if (resume.education && resume.education.length > 0) {
+    bodyLatex += `\\section{EDUCATION}\n`;
+    for (const edu of resume.education) {
+      let inst = cleanAiText(edu.institution || "").replace(/^[•*–—\\-\s]+/, "").trim();
+      let loc = cleanAiText(edu.location || "").replace(/^[•*–—\\-\s]+/, "").trim();
+      let deg = cleanAiText(edu.degree || "").replace(/^[•*–—\\-\s]+/, "").trim();
+      let dStr = edu.dateRange ? edu.dateRange.replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ") : "";
+
+      if (inst.includes("|")) {
+        const parts = inst.split("|").map((p) => p.trim()).filter(Boolean);
+        inst = parts[0] || inst;
+        if (!loc && parts.length > 1) {
+          loc = parts.slice(1).join(", ");
+        }
+      }
+      if (deg.includes("|")) {
+        const parts = deg.split("|").map((p) => p.trim()).filter(Boolean);
+        deg = parts[0] || deg;
+        if (!loc && parts.length > 1) {
+          loc = parts.slice(1).join(", ");
+        }
+      }
+
+      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
+      if (Array.isArray(edu.bullets) && edu.bullets.length > 0) {
+        bodyLatex += `\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+        for (const b of edu.bullets) {
+          const cleanBullet = cleanAiText(b);
+          if (!cleanBullet) continue;
+          bodyLatex += `  \\item ${formatLatexLine(cleanBullet, allKnownLinks)}\n`;
+        }
+        bodyLatex += `\\end{itemize}\n`;
+      }
+    }
+  }
+
+  // 6. Achievements
+  if (resume.achievements && resume.achievements.length > 0) {
+    bodyLatex += `\\section{ACHIEVEMENTS}\n`;
+    bodyLatex += `\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+    for (const ach of resume.achievements) {
+      const cleanAch = cleanAiText(ach);
+      if (!cleanAch) continue;
+      const labelled = cleanAch.match(/^([A-Z][A-Za-z0-9 &/''-]{1,40}):\s+(\S.*)$/);
+      if (labelled) {
+        bodyLatex += `  \\item \\textbf{${formatLatexLine(labelled[1], allKnownLinks)}:} ${formatLatexLine(labelled[2], allKnownLinks)}\n`;
+      } else {
+        bodyLatex += `  \\item ${formatLatexLine(cleanAch, allKnownLinks)}\n`;
+      }
+    }
+    bodyLatex += `\\end{itemize}\n`;
+  }
+
+  // 7. Certifications
+  if (resume.certifications && resume.certifications.length > 0) {
+    bodyLatex += `\\section{CERTIFICATIONS}\n`;
+    const certTokens = resume.certifications.map((c) => formatLatexLine(cleanAiText(c), allKnownLinks)).filter(Boolean);
+    bodyLatex += `{\\small ${certTokens.join(" \\enspace\\textbar\\enspace ")}\\par}\n`;
+  }
+
+  // Build full document with preamble
+  const contactTokens: string[] = [];
+  if (resume.phone) contactTokens.push(resume.phone);
+  if (resume.email) contactTokens.push(resume.email);
+  if (resume.linkedinUrl) contactTokens.push(`[LinkedIn](${resume.linkedinUrl})`);
+  if (resume.githubUrl) contactTokens.push(`[GitHub](${resume.githubUrl})`);
+  if (resume.portfolioUrl) contactTokens.push(`[Portfolio](${resume.portfolioUrl})`);
+  if (resume.location) contactTokens.push(resume.location);
+
+  const formattedContacts = contactTokens
+    .map((token) => formatLatexLine(token, allKnownLinks))
+    .join(" \\enspace\\textbar\\enspace ");
+
+  const preamble = `%-------------------------
+% Adaptive ATS LaTeX Resume
+% Clean Typography, Zero Page Numbers, 100% ATS Compliant
+%------------------------
+
+\\documentclass[10pt,a4paper]{article}
+\\usepackage[left=0.42in, right=0.42in, top=0.35in, bottom=0.35in]{geometry}
+\\usepackage{enumitem}
+\\usepackage{titlesec}
+\\usepackage[hidelinks]{hyperref}
+\\usepackage[usenames,dvipsnames]{color}
+\\usepackage{textcomp}
+\\usepackage{tabularx}
+\\usepackage[T1]{fontenc}
+\\usepackage{lmodern}
+\\input{glyphtounicode}
+\\ifdefined\\pdfgentounicode \\pdfgentounicode=1 \\fi
+
+\\setlength{\\parindent}{0pt}
+\\setlength{\\parskip}{0pt}
+\\linespread{1.02}
+\\raggedbottom
+\\raggedright
+\\setlength{\\tabcolsep}{0in}
+\\urlstyle{same}
+
+% Section spacing: 4pt before, 2pt after
+\\titleformat{\\section}{\\normalsize\\bfseries\\uppercase}{}{0em}{}[\\titlerule]
+\\titlespacing*{\\section}{0pt}{4pt}{2pt}
+
+% Global list spacing: zero internal vertical bloat
+\\setlist[itemize]{leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet}
+
+\\newcommand{\\resumeItem}[1]{
+  \\item #1
+}
+
+\\newcommand{\\resumeSubheading}[4]{
+  \\vspace{3pt}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
+    \\textit{\\small #3} & \\textit{\\small #4}
+  \\end{tabular*}\\nopagebreak[4]
+}
+
+\\newcommand{\\resumeProjectHeading}[2]{
+  \\vspace{3pt}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    #1 & \\textit{\\small #2}
+  \\end{tabular*}\\nopagebreak[4]
+}
+
+\\newcommand{\\resumeDivider}{\\enspace\\textbar\\enspace}
+\\newcommand{\\resumeSubHeadingListStart}{\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]}
+\\newcommand{\\resumeSubHeadingListEnd}{\\end{itemize}}
+\\newcommand{\\resumeItemListStart}{\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]}
+\\newcommand{\\resumeItemListEnd}{\\end{itemize}}
+
+\\begin{document}
+\\pagestyle{empty}
+\\thispagestyle{empty}
+
+%----------HEADING----------
+\\begin{center}
+  {\\LARGE \\textbf{${escapeLatex(resume.fullName || "Candidate Name")}}} \\\\[2pt]
+  \\small ${formattedContacts}
+\\end{center}
+\\vspace{-8pt}
+
+%----------BODY SECTIONS----------
+${bodyLatex.trim()}
+\\end{document}
+`;
+
+  let finalLatex = ensureAllHrefsPreservedInLatex(preamble, [options?.originalLatex || "", allKnownLinks]);
+  finalLatex = finalLatex.replace(/\$C\+\+\$/g, "C++").replace(/\\\$C\+\+\\\$/g, "C++");
+  return finalLatex;
 }
 
 function updateBulletInCanonical(
@@ -2051,72 +1919,11 @@ export function validateAndProtectOrphanedSkills(
   resumeText: string,
   experienceBullets: string[]
 ): { sanitizedText: string; orphanedSkills: string[]; wovenBullets?: string[] } {
-  const lines = resumeText.split("\n");
-  let inSkillsSection = false;
-  const orphanedSkills: string[] = [];
-  const modifiedLines: string[] = [];
-
-  let currentBullets = [...experienceBullets];
-  let combinedBulletsText = currentBullets.join(" ").toLowerCase();
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmed = line.trim();
-
-    if (
-      /^(?:#{1,3}\s*)?(?:technical |core |key |professional )?(?:skills|technologies|competencies)\s*:?$/i.test(
-        trimmed
-      )
-    ) {
-      inSkillsSection = true;
-      modifiedLines.push(line);
-      continue;
-    }
-
-    if (inSkillsSection && /^(?:#{1,3}\s*)?[A-Z\s]{4,}:?$/.test(trimmed) && !trimmed.toLowerCase().includes("skills")) {
-      inSkillsSection = false;
-    }
-
-    if (inSkillsSection && trimmed.includes(":")) {
-      const [category, skillsStr] = trimmed.split(/:\s*(.*)/);
-      if (skillsStr) {
-        const skills = skillsStr.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
-        const groundedSkills: string[] = [];
-
-        for (const skill of skills) {
-          let isGrounded =
-            containsSkill(combinedBulletsText, skill) || combinedBulletsText.includes(skill.toLowerCase());
-
-          if (!isGrounded) {
-            // Attempt Twice-Rule contextual weaving into experience bullets!
-            const weaveRes = weaveSkillIntoExperienceBullets(currentBullets, skill);
-            if (weaveRes.success) {
-              currentBullets = weaveRes.wovenBullets;
-              combinedBulletsText = currentBullets.join(" ").toLowerCase();
-              isGrounded = true;
-            }
-          }
-
-          if (isGrounded) {
-            groundedSkills.push(skill);
-          } else {
-            orphanedSkills.push(skill);
-          }
-        }
-
-        const finalSkills = groundedSkills.length > 0 ? groundedSkills : skills;
-        modifiedLines.push(`${category}: ${finalSkills.join(", ")}`);
-        continue;
-      }
-    }
-
-    modifiedLines.push(line);
-  }
-
+  // Baseline candidate skills in Technical Skills are preserved without polluting bullets.
   return {
-    sanitizedText: modifiedLines.join("\n"),
-    orphanedSkills,
-    wovenBullets: currentBullets,
+    sanitizedText: resumeText,
+    orphanedSkills: [],
+    wovenBullets: experienceBullets,
   };
 }
 
@@ -2295,50 +2102,52 @@ export function runAllRemediationPasses(params: {
     }
 
     // THE TWICE RULE: Deep Contextual Skill Weaving
-    // If a skill is in Technical Skills, it MUST appear in at least one Work Experience bullet!
-    if (canonical.technicalSkills && typeof canonical.technicalSkills === "object" && !Array.isArray(canonical.technicalSkills)) {
-      const currentExpBullets = getAllExperienceBullets(canonical);
-      for (const [cat, skillsList] of Object.entries(canonical.technicalSkills)) {
-        if (!Array.isArray(skillsList)) continue;
-        const validSkills: string[] = [];
-        for (const skill of skillsList) {
-          const isPresent = currentExpBullets.some((b) => containsSkill(b, skill));
-          if (isPresent) {
-            validSkills.push(skill);
-            twicePromotions++;
-          } else {
-            let woven = false;
-            for (const exp of canonical.experience) {
-              if (Array.isArray(exp.subheadings)) {
-                for (const sub of exp.subheadings) {
-                  const res = weaveSkillIntoExperienceBullets(sub.bullets, skill);
-                  if (res.success) {
-                    sub.bullets = res.wovenBullets;
-                    validSkills.push(skill);
-                    twicePromotions++;
-                    woven = true;
-                    break;
-                  }
-                }
-              }
-              if (woven) break;
-              if (Array.isArray(exp.bullets)) {
-                const res = weaveSkillIntoExperienceBullets(exp.bullets, skill);
-                if (res.success) {
-                  exp.bullets = res.wovenBullets;
-                  validSkills.push(skill);
-                  twicePromotions++;
-                  woven = true;
-                  break;
-                }
-              }
-            }
-            if (!woven) {
-              // Not grounded or woven -> omit to avoid orphaned skill penalty
+    // Enforce the Twice Rule strictly on TARGET JD SKILLS that are relevant and not yet in experience bullets.
+    // Baseline candidate skills already present in Technical Skills are preserved as-is without spamming bullets.
+    // Limit to max 3 newly woven skills across the entire resume, and at most 1 skill per bullet.
+    let totalNewlyWoven = 0;
+    const maxSkillsToWeave = 3;
+
+    const jdSkillsToWeave = targetKeywords.filter((kw) => {
+      const lower = kw.toLowerCase().trim();
+      if (lower.length < 3 || /^(engineer|software|developer|team|experience|years|work|strong|ability)$/i.test(lower)) {
+        return false;
+      }
+      return true;
+    });
+
+    for (const skill of jdSkillsToWeave) {
+      if (totalNewlyWoven >= maxSkillsToWeave) break;
+
+      const currentBullets = getAllExperienceBullets(canonical);
+      const isAlreadyInBullets = currentBullets.some((b) => containsSkill(b, skill));
+      if (isAlreadyInBullets) continue; // Already present in experience!
+
+      let woven = false;
+      for (const exp of canonical.experience) {
+        if (Array.isArray(exp.subheadings)) {
+          for (const sub of exp.subheadings) {
+            const res = weaveSkillIntoExperienceBullets(sub.bullets, skill);
+            if (res.success) {
+              sub.bullets = res.wovenBullets;
+              twicePromotions++;
+              totalNewlyWoven++;
+              woven = true;
+              break;
             }
           }
         }
-        canonical.technicalSkills[cat] = validSkills.length > 0 ? validSkills : skillsList;
+        if (woven) break;
+        if (Array.isArray(exp.bullets)) {
+          const res = weaveSkillIntoExperienceBullets(exp.bullets, skill);
+          if (res.success) {
+            exp.bullets = res.wovenBullets;
+            twicePromotions++;
+            totalNewlyWoven++;
+            woven = true;
+            break;
+          }
+        }
       }
     }
   }
@@ -2370,7 +2179,7 @@ export function runAllRemediationPasses(params: {
   updatedText = cleanSmartTypography(updatedText);
   updatedText = cleanLingeringPlaceholders(updatedText, false);
 
-  let updatedLatex = generateATSLatex(updatedText, { originalLatex: params.latex });
+  let updatedLatex = generateLatexFromCanonical(canonical, { originalLatex: params.latex });
   updatedLatex = cleanLingeringPlaceholders(updatedLatex, true);
 
   if (params.latex && params.latex.trim()) {

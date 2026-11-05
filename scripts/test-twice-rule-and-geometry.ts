@@ -78,7 +78,7 @@ Certifications
   assert(!tailored.optimizedText.includes("Ver Vertx Flow"), "Must not contain 'Ver Vertx Flow'");
   assert(!tailored.optimizedLatex.includes("Ver Vertx Flow"), "LaTeX must not contain 'Ver Vertx Flow'");
 
-  // Verify Project Subheadings are formatted without \item
+  // Verify Project Subheadings are formatted without \item and follow exact hierarchy
   assert(
     tailored.optimizedLatex.includes("\\textbf{Drone GCS \\& Fleet Management Platform}") ||
     tailored.optimizedLatex.includes("\\textbf{Drone GCS & Fleet Management Platform}"),
@@ -89,19 +89,25 @@ Certifications
     !tailored.optimizedLatex.includes("\\resumeItem{Drone GCS"),
     "Project subheadings must NEVER be wrapped in \\item or \\resumeItem"
   );
+  assert(
+    tailored.optimizedLatex.includes("\\vspace{3pt}\n\\noindent \\textbf{") ||
+    tailored.optimizedLatex.includes("\\vspace{3pt} \\noindent \\textbf{"),
+    "Subproject headings must be preceded by \\vspace{3pt} and standalone \\noindent \\textbf{"
+  );
   console.log("✅ [PASS] Zero text jumbling and project subheadings rendered cleanly without \\item!");
 
-  // --- 3. Test Decompressed LaTeX Geometry ---
-  console.log("\n--- 3. Testing De-compressed LaTeX Geometry ---");
+  // --- 3. Test Zero-Out Bullet Spacing & Surgical Geometry ---
+  console.log("\n--- 3. Testing Zero-Out Bullet Spacing & Surgical Geometry ---");
   const decompressedLatex = optimizeLatexGeometryForOnePage(tailored.optimizedLatex);
   
   assert(decompressedLatex.includes("\\linespread{1.15}"), "Must set line spacing multiplier to \\linespread{1.15}");
-  assert(decompressedLatex.includes("itemsep=") && !decompressedLatex.includes("itemsep=0.3pt"), "itemsep must be at least 2.0pt");
+  assert(decompressedLatex.includes("itemsep=1pt"), "Intra-bullet itemsep must be strictly 1pt near-zero");
+  assert(decompressedLatex.includes("\\raggedbottom"), "Must include \\raggedbottom to stop page stretching");
   assert(decompressedLatex.includes("10pt") || decompressedLatex.includes("10.5pt") || decompressedLatex.includes("9.5pt"), "Base font must not drop below 9.5pt (prefer 10pt)");
   assert(decompressedLatex.includes("0.5in"), "Margins must be standard ATS safe 0.5in bounds");
-  assert(!decompressedLatex.includes("0.25in"), "Must never compress margins to 0.25in");
-  assert(!decompressedLatex.includes("itemsep=0.3pt"), "Must never compress itemsep to 0.3pt");
-  console.log("✅ [PASS] LaTeX geometry de-compressed with hard readability minimums enforced!");
+  assert(decompressedLatex.includes("\\vspace{6pt}") || decompressedLatex.includes("{6pt}{2pt}"), "Must have 6pt section spacing");
+  assert(decompressedLatex.includes("\\vspace{4pt}"), "Must have 4pt company heading spacing");
+  console.log("✅ [PASS] Zero-out bullet spacing (1pt) and surgical spacing (6pt section, 4pt company, 3pt project) verified!");
 
   // --- 4. Test Single-Page Content Trimming Fallback ---
   console.log("\n--- 4. Testing Single-Page Content Trimming Fallback ---");

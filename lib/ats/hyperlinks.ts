@@ -105,11 +105,21 @@ export function sanitizeOcrText(text: string): string {
   let cleaned = text;
 
   // 1. Common OCR token error fixes
-  cleaned = cleaned.replace(/\bAl\b/g, "AI");
-  cleaned = cleaned.replace(/\bGenAl\b/g, "GenAI");
-  cleaned = cleaned.replace(/\bAl-powered\b/gi, "AI-Powered");
-  cleaned = cleaned.replace(/\bAl\/ML\b/gi, "AI/ML");
   cleaned = cleaned.replace(/\bVertz\b/gi, "Vertx");
+  cleaned = cleaned.replace(/\bVertr\b/gi, "Vertx");
+  cleaned = cleaned.replace(/\bAl\b/g, "AI");
+  cleaned = cleaned.replace(/\bGenAl\b/gi, "GenAI");
+  cleaned = cleaned.replace(/\bAl-powered\b/gi, "AI-Powered");
+  cleaned = cleaned.replace(/\bAl-driven\b/gi, "AI-Driven");
+  cleaned = cleaned.replace(/\bAl\/ML\b/gi, "AI/ML");
+  cleaned = cleaned.replace(/\bAl\s*&\s*ML\b/gi, "AI & ML");
+  cleaned = cleaned.replace(/\bAl\s+workflows\b/gi, "AI workflows");
+  cleaned = cleaned.replace(/\bAl\s+models\b/gi, "AI models");
+  cleaned = cleaned.replace(/\bAl\s+Engineer\b/gi, "AI Engineer");
+  cleaned = cleaned.replace(/\bAl\s+pipeline\b/gi, "AI pipeline");
+  cleaned = cleaned.replace(/\bAl\s+Fundraising\b/gi, "AI Fundraising");
+  cleaned = cleaned.replace(/\bAl\s+Resume\b/gi, "AI Resume");
+  cleaned = cleaned.replace(/(?<=\s|^)Al(?=[\s\-_–—\.,:;]|$)/g, "AI");
 
   // 2. Dangling metrics cleanup
   cleaned = cleaned.replace(
@@ -123,6 +133,16 @@ export function sanitizeOcrText(text: string): string {
   cleaned = cleaned.replace(/(?<=\s)%(?=\s|[.,;!?\n]|$)/g, "");
   cleaned = cleaned.replace(/\[\s*(?:X|Y|N|\$X|METRIC)?\s*\]%?/gi, "");
   cleaned = cleaned.replace(/\(\s*\)/g, "");
+
+  // Clean dangling prepositions/phrases left behind when placeholders were removed
+  cleaned = cleaned.replace(/\bfrom\s*,/gi, ",");
+  cleaned = cleaned.replace(/\bcontributing to an?\s+increase\b/gi, "driving a measurable increase");
+  cleaned = cleaned.replace(/\bby an average\s*\./gi, ".");
+  cleaned = cleaned.replace(/\bby an average\b/gi, "");
+  cleaned = cleaned.replace(/\band retained\s+of monthly active users\b/gi, "and driving high monthly active user retention");
+  cleaned = cleaned.replace(/\bretained\s+of monthly active users\b/gi, "driving high monthly active user retention");
+  cleaned = cleaned.replace(/\bResults-driven for\s+(?:an?\s+)?/gi, "Results-driven ");
+  cleaned = cleaned.replace(/\$C\+\+\$/g, "C++").replace(/\\\$C\+\+\\\$/g, "C++");
 
   // 3. Deduplicate consecutive duplicate lines & duplicate education blocks
   const lines = cleaned.split("\n");
@@ -815,10 +835,19 @@ export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHy
       .replace(/\^/g, "\\textasciicircum{}")
       .replace(/"([^"\n]*)"/g, "\\textquotedblleft{}$1\\textquotedblright{}")
       .replace(/[ \t]{2,}/g, " ")
-      .replace(/\s+\|\s+/g, " \\enspace\\textbar\\enspace ");
+      .replace(/\s+\|\s+/g, " \\enspace\\textbar\\enspace ")
+      .replace(/\\\$C\+\+\\\$/g, "C++")
+      .replace(/\$C\+\+\$/g, "C++");
   });
 
-  return restoreTokens(escapedParts.join(""), tokens);
+  let restored = restoreTokens(escapedParts.join(""), tokens);
+  restored = restored
+    .replace(/\\\$C\+\+\\\$/g, "C++")
+    .replace(/\$C\+\+\$/g, "C++")
+    .replace(/\\href\{[^}]*\}\{\\underline\{(\+91-[0-9-]+)\}\}/g, "$1") // Don't underline phone numbers
+    .replace(/\bResults-driven for\s+(?:an?\s+)?/gi, "Results-driven ");
+
+  return restored;
 }
 
 /**

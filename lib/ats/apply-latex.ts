@@ -1,11 +1,18 @@
-import { GoogleGenAI } from "@google/genai";
-import { generateATSLatex, cleanLingeringPlaceholders, runAllRemediationPasses } from "./tailor";
+import {
+  generateATSLatex,
+  cleanLingeringPlaceholders,
+  runAllRemediationPasses,
+  parseResumeToCanonical,
+  generateLatexFromCanonical,
+  cleanAiText,
+} from "./tailor";
 import type { UnifiedATSAudit } from "./analysis";
 import {
   extractHyperlinksFromLatex,
   restoreMissingHyperlinksInLatex,
   ensureAllHrefsPreservedInLatex,
   validatePdfHyperlinks,
+  sanitizeOcrText,
   type ExtractedHyperlink,
 } from "./hyperlinks";
 
@@ -62,32 +69,26 @@ export function optimizeLatexGeometryForOnePage(
     return doc;
   }
 
-  // 3. Dynamic 1-page parameter selection with breathable spacing and full vertical fill:
-  // - Base font size: 10pt/10.5pt (never below 9.5pt)
-  // - itemsep: 2.5pt - 3.0pt
-  // - baselineskip: line height >= 1.15
-  // - Safe margins: standard ATS safe bounds (0.5in)
-  // - Distinct spacing between sections, companies, and projects to prevent colliding
-  let targetClass = "\\documentclass[a4paper,10pt]{article}";
-  let targetGeometry = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
-  let targetSpacing = "\\titlespacing*{\\section}{0pt}{6.5pt plus 2.5pt minus 1pt}{3.5pt plus 1pt minus 0.5pt}";
+  // 3. Dynamic 1-page parameter selection with zero-out bullet spacing and surgical boundary spacing:
+  // - Base font size: 10pt standard
+  // - itemsep: 0.5pt near zero (no over-expansion onto page 2)
+  // - linespread: 1.02
+  // - Safe margins: 0.42in left/right, 0.35in top/bottom
+  // - Surgical spacing: 4pt before sections, 3pt before companies, 2pt before subprojects
+  let targetClass = "\\documentclass[10pt,a4paper]{article}";
+  let targetGeometry = "\\usepackage[left=0.42in, right=0.42in, top=0.35in, bottom=0.35in]{geometry}";
+  let targetSpacing = "\\titlespacing*{\\section}{0pt}{4pt}{2pt}";
   let targetSetlist =
-    "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.6pt plus 1pt minus 0.5pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
+    "\\setlist[itemize]{leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet}";
 
   if (words < 450 && lines < 45) {
-    // Low/medium density single-page resume: expand to 10.5pt font and generous spacing for 95%-98% full-page vertical fill
-    targetClass = "\\documentclass[a4paper,10.5pt]{extarticle}";
-    targetGeometry = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
-    targetSpacing = "\\titlespacing*{\\section}{0pt}{7.5pt plus 3pt minus 1pt}{4pt plus 1pt minus 0.5pt}";
-    targetSetlist =
-      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=3.0pt plus 1pt minus 0.5pt, parsep=0pt, topsep=2pt, partopsep=0pt}";
+    // Low/medium density single-page resume: expand base font to 10.5pt
+    targetClass = "\\documentclass[10.5pt,a4paper]{extarticle}";
+    targetGeometry = "\\usepackage[left=0.45in, right=0.45in, top=0.4in, bottom=0.4in]{geometry}";
   } else {
-    // Standard and high density: preserve hard readability minimums (10pt standard, 9.5pt min; itemsep >= 2pt; 0.5in margins)
-    targetClass = words > 650 || lines > 58 ? "\\documentclass[a4paper,9.5pt]{extarticle}" : "\\documentclass[a4paper,10pt]{article}";
-    targetGeometry = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
-    targetSpacing = "\\titlespacing*{\\section}{0pt}{5.5pt plus 2pt minus 1pt}{3pt plus 1pt minus 0.5pt}";
-    targetSetlist =
-      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.2pt plus 0.8pt minus 0.4pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
+    // Standard and high density
+    targetClass = words > 650 || lines > 58 ? "\\documentclass[9.5pt,a4paper]{extarticle}" : "\\documentclass[10pt,a4paper]{article}";
+    targetGeometry = "\\usepackage[left=0.42in, right=0.42in, top=0.35in, bottom=0.35in]{geometry}";
   }
 
   // 4. Inject or replace documentclass
@@ -114,19 +115,36 @@ export function optimizeLatexGeometryForOnePage(
     doc = doc.replace("\\begin{document}", `${targetSetlist}\n\\begin{document}`);
   }
 
-  // 8. Ensure readable line spacing >= 1.15 (\linespread{1.15})
-  if (!doc.includes("\\linespread{1.15}") && doc.includes("\\begin{document}")) {
-    doc = doc.replace("\\begin{document}", "\\linespread{1.15}\n\\begin{document}");
+  // 8. Ensure readable line spacing (\linespread{1.02})
+  if (doc.includes("\\linespread")) {
+    doc = doc.replace(/\\linespread\{[^}]*\}/g, "\\linespread{1.02}");
+  } else if (doc.includes("\\begin{document}")) {
+    doc = doc.replace("\\begin{document}", "\\linespread{1.02}\n\\begin{document}");
   }
 
-  // 9. Remove \raggedbottom on single-page resumes to allow vertical skips to fill the page
-  doc = doc.replace(/\\raggedbottom\n/, "");
+  // 9. Re-add \raggedbottom to preamble so LaTeX does NOT mathematically stretch the page and over-expand text
+  if (!doc.includes("\\raggedbottom") && doc.includes("\\begin{document}")) {
+    doc = doc.replace("\\begin{document}", "\\raggedbottom\n\\begin{document}");
+  }
 
-  // 10. Enhance company separation in \resumeSubheading if defined
+  // 10. Replace any itemize parameters with exact near-zero intra-bullet spacing
+  doc = doc.replace(/\\begin\{itemize\}(?:\[[^\]]*\])?/g, "\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]");
+  doc = doc.replace(
+    /\\newcommand\{\\resumeItemListStart\}\{[^}]*\}/,
+    "\\newcommand{\\resumeItemListStart}{\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]}"
+  );
+
+  // 11. Clean any C++ math mode
+  doc = doc.replace(/\$C\+\+\$/g, "C++").replace(/\\\$C\+\+\\\$/g, "C++");
+
+  // 11. Surgical spacing: Ensure \vspace{6pt} before \section declarations
+  doc = doc.replace(/(?<!\\vspace\{6pt\}\s*)\n\\section/g, "\n\\vspace{6pt}\n\\section");
+
+  // 12. Surgical spacing: Exactly \vspace{4pt} before company headings in \resumeSubheading
   doc = doc.replace(
     /\\newcommand\{\\resumeSubheading\}\[4\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[4\]\s*\}/,
     `\\newcommand{\\resumeSubheading}[4]{
-  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
+  \\vspace{4pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
     \\textit{\\small #3} & \\textit{\\small #4}
@@ -134,24 +152,34 @@ export function optimizeLatexGeometryForOnePage(
 }`
   );
 
-  // 11. Enhance project separation in \resumeProjectHeading if defined
+  // 13. Surgical spacing: Exactly \vspace{4pt} before project headings in \resumeProjectHeading
   doc = doc.replace(
     /\\newcommand\{\\resumeProjectHeading\}\[2\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[4\]\s*\}/,
     `\\newcommand{\\resumeProjectHeading}[2]{
-  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
+  \\vspace{4pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     #1 & \\textit{\\small #2}
   \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
 }`
   );
 
-  // 12. Enhance subproject separation inside companies
-  doc = doc.replace(/\\vspace\{2pt\} \\noindent \\textbf\{/g, "\\vspace{4.5pt plus 2pt minus 1pt} \\noindent \\textbf{");
+  // 14. Surgical spacing & hierarchy: Exactly \vspace{3pt} before subproject headings and \vspace{1pt} after
+  doc = doc.replace(/\\vspace\{(?:2|3|4\.5|5\.5)pt(?: plus [^}]*)?\}\s*\\noindent\s*\\textbf\{/g, "\\vspace{3pt}\n\\noindent \\textbf{");
+  doc = doc.replace(/(\\noindent \\textbf\{[^\n]+\})\s*\\vspace\{(?:1|1\.5|2)pt\}/g, "$1\n\\vspace{1pt}");
 
-  // 13. Prevent negative vspace on close itemize
-  doc = doc.replace(/\\end\{itemize\}\\vspace\{-2pt\}/g, "\\end{itemize}\\vspace{2pt}");
+  // 15. Remove bullets from project headings: unwrap any \item \textbf{Subproject} inside itemize into standalone bold text
+  doc = doc.replace(
+    /(\\begin\{itemize\}(?:\[[^\]]*\])?[\s\S]*?)\\item\s*\\textbf\{([^}]+)\}(?:\s*\\enspace\\textbar\\enspace\s*\\textit\{([^}]+)\})?\s*\n(\s*\\item)/g,
+    (match, prefix, title, tech, nextItem) => {
+      const techPart = tech ? ` \\enspace\\textbar\\enspace \\textit{${tech}}` : "";
+      return `${prefix}\\end{itemize}\n\\vspace{3pt}\n\\noindent \\textbf{${title}}${techPart}\n\\vspace{1pt}\n\\begin{itemize}[leftmargin=*, itemsep=1pt, parsep=0pt, topsep=1pt]\n${nextItem}`;
+    }
+  );
 
-  // 14. Ensure textcomp is loaded for standard bullet glyph
+  // 16. Prevent negative vspace on close itemize
+  doc = doc.replace(/\\end\{itemize\}\\vspace\{-2pt\}/g, "\\end{itemize}\n");
+
+  // 17. Ensure textcomp is loaded for standard bullet glyph
   if (!doc.includes("{textcomp}") && doc.includes("\\begin{document}")) {
     doc = doc.replace("\\begin{document}", "\\usepackage{textcomp}\n\\begin{document}");
   }
@@ -265,254 +293,38 @@ export async function validateAndCompileLatex(
  * Then validates and compiles the output to ensure 100% syntactically correct, zero-loss LaTeX.
  */
 export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): Promise<ApplyLatexResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  // Sanitize input text: fix OCR errors (Al→AI, Vertz→Vertx) BEFORE passing to remediation passes
+  const sanitizedText = sanitizeOcrText(params.atsOptimizedText || "");
 
-  // If original LaTeX is empty, create an initial standard ATS template
+  // If original LaTeX is provided, extract any known links
   let baseLatex = (params.originalLatex || "").trim();
-  if (!baseLatex) {
-    baseLatex = generateATSLatex(params.atsOptimizedText);
-  }
+  const originalLinks = baseLatex ? extractHyperlinksFromLatex(baseLatex) : [];
 
-  const originalLinks = extractHyperlinksFromLatex(baseLatex);
+  // Deterministic remediation passes:
+  // 1. Parses sanitizedText into CanonicalResume JSON schema
+  // 2. Applies AI PAR rewrites, active verb upgrades, de-duplications, twice-rule weaving, single-page trimming
+  // 3. Serializes strictly via generateLatexFromCanonical()
+  const deterministic = runAllRemediationPasses({
+    text: sanitizedText,
+    latex: baseLatex,
+    audit: params.audit,
+    jobText: params.jobText || "",
+    customMetrics: params.customMetrics,
+  });
 
-  // Pre-process suggestions from audit
-  const auditSuggestions = {
-    par_rewrites: params.audit?.action_verb_and_par_rewrites?.map((r) => ({
-      original: r.original_bullet,
-      optimized: r.optimized_par_bullet,
-      metric: r.metric_added_or_placeholder,
-    })) || [],
-    grammar_fixes: params.audit?.grammar_spelling_dialect_audit?.map((g) => ({
-      original: g.original_phrase,
-      corrected: g.corrected_phrase,
-    })) || [],
-    missing_keywords: params.audit?.jd_skills_alignment?.hard_skills_missing?.map((s) => s.keyword) || [],
-  };
-
-  // If no Gemini API key is configured, fallback to deterministic remediation passes
-  if (!apiKey || apiKey.trim() === "" || apiKey === "your-gemini-api-key-here") {
-    console.warn("GEMINI_API_KEY missing, using deterministic remediation passes for LaTeX");
-    const deterministic = runAllRemediationPasses({
-      text: params.atsOptimizedText,
-      latex: baseLatex,
-      audit: params.audit,
-      jobText: params.jobText || "",
-      customMetrics: params.customMetrics,
-    });
-
-    const compileRes = await validateAndCompileLatex(deterministic.optimizedLatex);
-    let linkReport = "";
-    let hyperlinkValidation: Awaited<ReturnType<typeof validatePdfHyperlinks>> | undefined = undefined;
-    if (compileRes.success && compileRes.pdfBuffer && originalLinks.length > 0) {
-      hyperlinkValidation = await validatePdfHyperlinks(
-        compileRes.pdfBuffer,
-        originalLinks.map((l) => l.url)
-      );
-      linkReport = ` • ${hyperlinkValidation.foundUrls.length} Clickable Links Verified`;
-    }
-
-    return {
-      updatedLatex: deterministic.optimizedLatex,
-      compiled: compileRes.success,
-      pdfBase64: compileRes.pdfBuffer ? compileRes.pdfBuffer.toString("base64") : undefined,
-      log: compileRes.log,
-      error: compileRes.error,
-      stats: `✓ Deterministic Merge Applied: ${deterministic.passesSummary.rewrites} PAR Rewrites, ${deterministic.passesSummary.metricsAdded} Metrics Added${linkReport}`,
-      hyperlinks: hyperlinkValidation
-        ? {
-            valid: hyperlinkValidation.valid,
-            foundCount: hyperlinkValidation.foundUrls.length,
-            expectedCount: originalLinks.length,
-            report: hyperlinkValidation.report,
-          }
-        : undefined,
-    };
-  }
-
-  const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
-  const modelName = process.env.GEMINI_ATS_MODEL || "gemini-2.5-flash";
-
-  const prompt = `You are a Principal LaTeX Typesetting Engineer and Executive Resume Strategist operating as a senior recruiter in the candidate's target industry.
-Your task is to merge ATS-optimized content and AI suggestions into the user's existing LaTeX resume template.
-
-=== 1. STRUCTURAL SOURCE OF TRUTH (ORIGINAL LATEX CODE) ===
-Treat this existing LaTeX code as the ARCHITECTURAL AND STRUCTURAL SOURCE OF TRUTH:
-"""latex
-${baseLatex}
-"""
-
-=== 2. CONTENT SOURCE OF TRUTH (ATS-OPTIMIZED RESUME CONTENT) ===
-Treat this text as the CONTENT SOURCE OF IMPROVEMENTS:
-"""text
-${params.atsOptimizedText}
-"""
-
-=== 3. DETAILED AI SUGGESTIONS & REWRITES (JSON AUDIT) ===
-"""json
-${JSON.stringify(auditSuggestions, null, 2)}
-"""
-
-${params.jobText ? `=== 4. TARGET JOB DESCRIPTION ===\n"""\n${params.jobText.slice(0, 4000)}\n"""\n` : ""}
-
-=== CRITICAL RULES & INSTRUCTIONS (NON-NEGOTIABLE) ===
-
-1. PRESERVE ALL ORIGINAL HYPERLINKS & MACROS:
-   - YOU MUST PRESERVE EVERY valid \\href{URL}{LABEL} and \\url{URL} from the original LaTeX template.
-   - Do NOT replace linked text with plain text. GitHub, LinkedIn, email addresses (mailto:), portfolio, and project links (Code, Live Demo) MUST remain clickable \\href{URL}{label}.
-   - If project details change or new bullets are added, retain original URLs and update only the visible text.
-   - Ensure \\usepackage[hidelinks]{hyperref} or \\usepackage{hyperref} is loaded in the preamble.
-   - YOU MUST REUSE the user's EXACT LaTeX preamble: \\documentclass, \\usepackage, custom colors, geometry, fonts, and custom macros (e.g. \\resumeSubheading, \\resumeItem, \\resumeProjectHeading, \\resumeSubItem, tabular layouts).
-   - DO NOT replace or simplify the template with a generic layout. Preserve the template's visual styling, margins, and custom itemize environments.
-
-2. PRESERVE ALL HEADINGS, SECTIONS, AND PROJECTS:
-   - YOU MUST PRESERVE EVERY SINGLE section heading present in the resume and template (e.g. \\section{PROFESSIONAL SUMMARY}, \\section{TECHNICAL SKILLS}, \\section{WORK EXPERIENCE}, \\section{PROJECTS}, \\section{EDUCATION}, \\section{ACHIEVEMENTS}, \\section{CERTIFICATIONS}).
-   - DO NOT rename, remove, omit, or collapse sections.
-   - DO NOT delete or merge distinct projects into one. Every project present in the resume MUST remain in the LaTeX with its bullet points intact, formatted using the template's project macro/environment.
-
-3. INJECT ATS CONTENT & SUGGESTIONS (STRICT SOURCE-GROUNDING & JD MIRRORING):
-   - Seamlessly update corresponding bullet points with improved PAR phrasing, strong action verbs, and concise technical achievements from the ATS resume and JSON suggestions to pass ATS filters.
-   - When a target Job Description is provided, mirror the language, technical vocabulary, and keywords in the job description without lying or inventing experience.
-   - Apply all grammar, spelling, and phrasing improvements.
-   - ENFORCE THE STRICT "TWICE RULE" (DEEP CONTEXTUAL SKILL WEAVING):
-     * If you add a new skill to the Technical Skills section based on the JD or user input, you MUST weave that exact skill into at least one bullet point within the Work Experience section.
-     * Do NOT dump a target skill solely into the Technical Skills section without proving how the candidate used it.
-     * Example: If adding "Artificial Intelligence", modify a bullet to say: "Spearheaded an Artificial Intelligence pipeline combining YOLO and SAHI..." instead of just saying "Spearheaded a multi-stage pipeline...".
-   - STRICT SOURCE GROUNDING (MANDATORY POLICY):
-     * The AI does not invent experience; it highlights the impact the candidate has already made.
-     * NEVER invent employers, job titles, dates, technologies, frameworks, certifications, or metrics.
-     * Treat the candidate's original resume as the source of truth. Retain numerical achievements ONLY when supported by the original resume or verified user inputs.
-     * NEVER fabricate arbitrary percentages, latencies, or dollar amounts.
-     * If a bullet contains placeholder brackets like [X]%, [Y]%, [N], [$X], or [METRIC] and no verified number is provided in the input, cleanly remove the bracket placeholder and rephrase smoothly without inventing numbers or percentages.
-     * DO NOT weave missing JD skills into the Technical Skills section or experience bullets. Missing JD skills from the audit are diagnostic recommendations for the candidate, NEVER claimed candidate skills.
-     * DO NOT add generic filler phrases such as "leveraging Java for scalable execution" or arbitrary impact clauses.
-     * Keep project-specific technology associations intact; do not assume a technology used in one project was used in another.
-
-4. TEXT WRAPPING & NO MID-SENTENCE BREAKS:
-   - DO NOT insert manual line breaks (\\\\ or \\newline) in the middle of sentences or bullet points.
-   - Preserve each bullet point as one logical paragraph (\\resumeItem{...} or \\item ...) and let LaTeX wrap text naturally.
-   - Keep continuation lines aligned with the bullet text without artificial line splits or malformed hyphenation.
-   - NEVER output math mode pipes such as $|$ or \\$|\\$. Always use \\enspace\\textbar\\enspace or the template's divider macro.
-
-5. ADAPTIVE PAGINATION & READABLE TYPOGRAPHY:
-   - Do NOT force every resume onto a single page. Implement adaptive pagination based on the candidate's actual content.
-   - If the candidate's content naturally fits on 1 page without shrinking fonts or clipping content, use a clean 1-page layout.
-   - If the candidate has extensive experience/projects (e.g. 2 pages), format cleanly across 2 pages with standard typography (10pt), balanced section breaks, and comfortable margins (0.4in to 0.5in).
-   - NEVER drop, delete, or truncate projects or bullets just to meet a 1-page target.
-   - Prevent orphan headings (always keep headings attached to their initial content) and do not break subproject headers away from their bullet points.
-
-6. LATEX SYNTAX, COMPILATION & CLEANLINESS:
-   - Properly escape LaTeX special characters in content: % -> \\%, & -> \\&, $ -> \\$, _ -> \\_, # -> \\#.
-   - Ensure all environments (\\begin{...} ... \\end{...}) and braces ({...}) are strictly balanced and syntactically valid.
-   - Ensure \\pagestyle{empty} and \\thispagestyle{empty} are present so no page numbers appear.
-   - Strip any pagination artifacts (e.g. "-- 1 of 2 --", "Page 1 of 2").
-
-7. OUTPUT SPECIFICATION:
-   - Return ONLY the final, compilable LaTeX code.
-   - Do NOT include any markdown code fences (no \`\`\`latex or \`\`\`), and NO conversational commentary.
-   - Start directly with \\documentclass and end with \\end{document}.
-`;
-
-  let updatedLatex = "";
-
-  try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: prompt,
-    });
-
-    updatedLatex = cleanLatexMarkdownFences(response.text || "");
-  } catch (err) {
-    console.warn(`Primary model ${modelName} failed, attempting fallback to gemini-2.5-flash:`, err);
-    try {
-      const fallbackResponse = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-      });
-      updatedLatex = cleanLatexMarkdownFences(fallbackResponse.text || "");
-    } catch (fallbackErr) {
-      console.warn("AI LaTeX generation failed, falling back to deterministic remediation:", fallbackErr);
-      const deterministic = runAllRemediationPasses({
-        text: params.atsOptimizedText,
-        latex: baseLatex,
-        audit: params.audit,
-        jobText: params.jobText || "",
-        customMetrics: params.customMetrics,
-      });
-      updatedLatex = deterministic.optimizedLatex;
-    }
-  }
-
-  // Safety checks on the generated LaTeX
-  if (!updatedLatex || !updatedLatex.includes("\\begin{document}")) {
-    console.warn("AI output did not contain valid LaTeX, falling back to deterministic synthesis");
-    const deterministic = runAllRemediationPasses({
-      text: params.atsOptimizedText,
-      latex: baseLatex,
-      audit: params.audit,
-      jobText: params.jobText || "",
-      customMetrics: params.customMetrics,
-    });
-    updatedLatex = deterministic.optimizedLatex;
-  }
-
-  // Post-process placeholders and page numbering
-  updatedLatex = cleanLingeringPlaceholders(updatedLatex, true);
-  updatedLatex = updatedLatex.replace(/(?:\\\$[ \t]*[|][ \t]*\\\$|\\\$[ \t]*\\\|[ \t]*\\\$|\$[ \t]*\|[ \t]*\$)/g, "\\enspace\\textbar\\enspace");
-  updatedLatex = updatedLatex.replace(/\\\\+(\s*\\(?:end\{itemize\}|end\{tabular\*?\}|section))/g, "$1");
-  if (!updatedLatex.includes("pagestyle{empty}") && updatedLatex.includes("\\begin{document}")) {
-    updatedLatex = updatedLatex.replace(
-      "\\begin{document}",
-      "\\begin{document}\n\\pagestyle{empty}\n\\thispagestyle{empty}"
-    );
-  }
-
-  // Optimize LaTeX geometry for strict 1-page boundary limit and 95%-98% vertical fill density
-  updatedLatex = optimizeLatexGeometryForOnePage(updatedLatex);
+  let updatedLatex = deterministic.optimizedLatex;
 
   // Restore and reconcile original hyperlinks into updated LaTeX
-  updatedLatex = ensureAllHrefsPreservedInLatex(updatedLatex, [baseLatex, params.atsOptimizedText]);
+  updatedLatex = ensureAllHrefsPreservedInLatex(updatedLatex, [baseLatex, sanitizedText]);
+
+  // Clean lingering placeholders
+  updatedLatex = cleanLingeringPlaceholders(updatedLatex, true);
 
   // Compile and validate with TeXLive CGI
-  let compileResult = await validateAndCompileLatex(updatedLatex, [baseLatex, params.atsOptimizedText]);
+  const compileResult = await validateAndCompileLatex(updatedLatex, [baseLatex, sanitizedText]);
 
-  // Self-repair pass if compilation had syntax errors
-  if (!compileResult.success && compileResult.log && apiKey) {
-    console.warn("TeXLive compilation warning, initiating 1-shot self-healing pass...");
-    try {
-      const healingPrompt = `The following LaTeX code produced a syntax/compilation error in TeXLive:
-=== COMPILER ERROR LOG ===
-${compileResult.log.slice(0, 1500)}
-
-=== FAILING LATEX CODE ===
-${updatedLatex}
-
-TASK:
-Fix the syntax error, missing package, or unescaped character causing the failure.
-Preserve all content, headings, sections, macros, and \\href hyperlinks.
-Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
-
-      const healingResponse = await ai.models.generateContent({
-        model: modelName,
-        contents: healingPrompt,
-      });
-
-      let healedLatex = cleanLatexMarkdownFences(healingResponse.text || "");
-      if (healedLatex && healedLatex.includes("\\begin{document}")) {
-        healedLatex = restoreMissingHyperlinksInLatex(healedLatex, baseLatex);
-        const healedCompileResult = await validateAndCompileLatex(healedLatex);
-        if (healedCompileResult.success) {
-          console.log("Self-healing pass succeeded! LaTeX compiled cleanly to PDF.");
-          updatedLatex = healedLatex;
-          compileResult = healedCompileResult;
-        }
-      }
-    } catch (healErr) {
-      console.warn("Self-healing pass encountered error:", healErr);
-    }
-  }
-
-  const sectionCount = (updatedLatex.match(/\\section\*?\{/g) || []).length;
-  const hrefCount = (updatedLatex.match(/\\href\{/g) || []).length;
+  const sectionCount = (updatedLatex.match(/\section\*?\{/g) || []).length;
+  const hrefCount = (updatedLatex.match(/\href\{/g) || []).length;
 
   let linkReport = "";
   let hyperlinkValidation: Awaited<ReturnType<typeof validatePdfHyperlinks>> | undefined = undefined;
@@ -524,9 +336,10 @@ Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
     linkReport = ` • ${hyperlinkValidation.foundUrls.length} Clickable Links Verified`;
   }
 
+  const delta = deterministic.passesSummary.rewrites + deterministic.passesSummary.metricsAdded;
   const stats = compileResult.success
-    ? `✨ AI-Integrated LaTeX Verified: ${sectionCount} Sections Preserved • ${hrefCount} \\href Links${linkReport} • TeXLive Verified (${compileResult.pdfBuffer?.byteLength ? `${Math.round(compileResult.pdfBuffer.byteLength / 1024)} KB PDF` : "Clean Build"})`
-    : `⚠️ AI-Integrated LaTeX: ${sectionCount} Sections Preserved • ${hrefCount} \\href Links • TeXLive Warning: ${compileResult.error || "Review syntax"}`;
+    ? `✨ Tailored LaTeX Verified: ${sectionCount} Sections Preserved • ${hrefCount} \\href Links${linkReport} • TeXLive Verified (${compileResult.pdfBuffer?.byteLength ? `${Math.round(compileResult.pdfBuffer.byteLength / 1024)} KB PDF` : "Clean Build"})`
+    : `⚠️ Tailored LaTeX: ${sectionCount} Sections Preserved • ${hrefCount} \\href Links • TeXLive Warning: ${compileResult.error || "Review syntax"}`;
 
   return {
     updatedLatex,
@@ -535,6 +348,7 @@ Return ONLY the corrected, compilable LaTeX code with NO markdown fences.`;
     log: compileResult.log,
     error: compileResult.error,
     stats,
+    delta,
     hyperlinks: hyperlinkValidation
       ? {
           valid: hyperlinkValidation.valid,
