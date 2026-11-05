@@ -237,7 +237,9 @@ Structure the email as exactly 3 clean paragraphs (strictly 100–130 words tota
    Cite 2 specific, quantified engineering achievements from the candidate's verified experience (Julley Online Private Limited and/or Vertx) containing newly woven JD skills and real metrics (e.g., 42%, 35% across 500K+ records, 99.9% uptime SLA, or 38% accuracy increase).
 
 4. Paragraph 3 (CTA & Links):
-   Mention that your tailored single-page resume (Resume_Loka_Surya_Prakash_[CompanyName].pdf) is attached, include clean links to GitHub and LinkedIn from the candidate profile, and close professionally.
+   Mention that your resume (Resume_Loka_Surya_Prakash_[CompanyName].pdf) is attached, include clean links to GitHub and LinkedIn from the candidate profile, and close professionally.
+   Use natural human phrasing such as "Please find my resume attached (Resume_Loka_Surya_Prakash_[CompanyName].pdf) for your review." or "I have attached my resume (...pdf) for your reference."
+   STRICT NEGATIVE CONSTRAINT: When referring to the resume you MUST NEVER use meta-descriptive words such as "tailored", "customized", "single-page", "one-page", "generated", or "optimized". Just say "my resume".
 
 5. Sign-off:
    Best regards,
@@ -339,7 +341,7 @@ TASK:
 2. Subject line format: "Application for [Target Role Title] — Loka Surya Prakash | [Top 2 Matched JD Skills]"
 3. Paragraph 1: State role, company, and align with up to 3 skills taken ONLY from VERIFIED_MATCHED_SKILLS.
 4. Paragraph 2: Reference 2 specific quantified engineering achievements from Julley Online Private Limited or Vertx with real metrics (42%, 35%, 38%, 99.9%).
-5. Paragraph 3: Mention the attached single-page resume (${attachmentFilename || "Resume_Loka_Surya_Prakash.pdf"}) and clean GitHub/LinkedIn links.
+5. Paragraph 3: Say "Please find my resume attached (${attachmentFilename || "Resume_Loka_Surya_Prakash.pdf"}) for your review." (or "I have attached my resume (...) for your reference.") and add clean GitHub/LinkedIn links. NEVER use the words "tailored", "customized", "single-page", "one-page", or "generated" about the resume.
 
 Return JSON with keys:
 {

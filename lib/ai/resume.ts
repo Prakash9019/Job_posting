@@ -240,7 +240,7 @@ function flattenResumeSkills(canonicalResume?: CanonicalResume): string[] {
  * - Subject: Application for [Target Role Title] — Loka Surya Prakash | [Top 2 Matched JD Skills]
  * - Paragraph 1: Address recipient at [CompanyName], state role from screenshot, align with [Top 3 Matched JD Skills]
  * - Paragraph 2: Cite 2 specific, quantified engineering achievements from Julley Online Private Limited and Vertx
- * - Paragraph 3: Mention attached single-page resume (Resume_Loka_Surya_Prakash_[CompanyName].pdf) and clean links
+ * - Paragraph 3: Mention attached resume (never "tailored"/"single-page") (Resume_Loka_Surya_Prakash_[CompanyName].pdf) and clean links
  */
 export async function generateTargetedColdEmail(params: {
   jobProfile: JobTargetProfile;
@@ -361,7 +361,7 @@ export async function generateTargetedColdEmail(params: {
   const p2 = `At Julley Online Private Limited, I ${ach1.description}, ${ach1.metric}. Additionally, at Vertx, I ${ach2.description}, ${ach2.metric}. Both platforms required rigorous focus on high availability, low latency, and robust data pipelines.`;
 
   // Paragraph 3: CTA & Links (37 words)
-  const p3 = `I have attached my tailored single-page resume (${attachmentFilename}). You can also explore my open-source work on GitHub (${githubUrl}) and connect on LinkedIn (${linkedinUrl}). I look forward to speaking with your team.`;
+  const p3 = `Please find my resume attached (${attachmentFilename}) for your review. You can also explore my open-source work on GitHub (${githubUrl}) and connect on LinkedIn (${linkedinUrl}). I look forward to speaking with your team.`;
 
   // Closing: Clean Sign-off (5 words)
   const closing = `Best regards,\n${candidateDisplayName}`;
