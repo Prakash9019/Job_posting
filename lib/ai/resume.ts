@@ -100,3 +100,143 @@ export async function getReadableResumeText(resume: { extractedText: string; fil
   }
   return resume.extractedText;
 }
+
+export interface JobTargetProfile {
+  targetRole: string;
+  companyName: string;
+  targetStack: string[];
+  architecturePatterns?: string[];
+  domainKeywords?: string[];
+  contactName?: string;
+  contactEmail?: string;
+  recipientTitle?: string;
+}
+
+export interface ColdEmailDraftResult {
+  subject: string;
+  body: string;
+  wordCount: number;
+  referencedProjects: string[];
+  keyMetricsUsed: string[];
+  targetStackMatched: string[];
+}
+
+interface ReferenceProjectAchievement {
+  company: "Julley Online" | "Vertx";
+  projectTitle: string;
+  description: string;
+  metric: string;
+  techStack: string[];
+}
+
+const REFERENCE_ACHIEVEMENTS: ReferenceProjectAchievement[] = [
+  {
+    company: "Julley Online",
+    projectTitle: "AI-Powered Drawing Tag Extraction Pipeline",
+    description: "engineered a multi-stage AI extraction pipeline using YOLO and OCR",
+    metric: "sub-10 minute blueprint extraction",
+    techStack: ["Python", "OpenCV", "FastAPI", "OCR", "YOLO", "Computer Vision"],
+  },
+  {
+    company: "Julley Online",
+    projectTitle: "Drone GCS & Fleet Management Platform",
+    description: "built a distributed Ground Control Station streaming real-time telemetry",
+    metric: "zero telemetry packet loss",
+    techStack: ["FastAPI", "React", "Python", "WebSockets", "Microservices", "Distributed Systems"],
+  },
+  {
+    company: "Julley Online",
+    projectTitle: "PMS Integration Hub",
+    description: "architected a centralized integration hub connecting Zoho, Gmail, Outlook, and Naukri",
+    metric: "99.9% uptime across unified workflows",
+    techStack: ["Node.js", "TypeScript", "REST APIs", "Microservices", "Distributed State"],
+  },
+  {
+    company: "Vertx",
+    projectTitle: "Vertx Flow — AI Fundraising Platform",
+    description: "built AI investor matching and ranking workflows",
+    metric: "automated matching across 50+ workflows",
+    techStack: ["React", "Node.js", "Express", "AI", "LLM", "MongoDB"],
+  },
+  {
+    company: "Vertx",
+    projectTitle: "Vertx Startin — Founder-Investor Network",
+    description: "developed full-stack real-time messaging and indexing services",
+    metric: "sub-second query response times",
+    techStack: ["React", "Node.js", "Express", "MongoDB", "REST APIs", "System Design"],
+  },
+];
+
+/**
+ * Generates a concise, high-conversion ~120-word cold outreach email
+ * using the structured JobTargetProfile and top 2 tailored project achievements
+ * referencing verified metrics from Julley Online or Vertx.
+ */
+export async function generateTargetedColdEmail(params: {
+  jobProfile: JobTargetProfile;
+  resumeText?: string;
+  candidateName?: string;
+  candidateEmail?: string;
+}): Promise<ColdEmailDraftResult> {
+  const { jobProfile, candidateName = "Loka Surya Prakash Pentakota", candidateEmail = "plsprakash2003@gmail.com" } = params;
+
+  // Rank candidate achievements against target stack and architecture patterns
+  const allTargetTerms = [
+    ...jobProfile.targetStack,
+    ...(jobProfile.architecturePatterns || []),
+    ...(jobProfile.domainKeywords || []),
+  ].map((t) => t.toLowerCase());
+
+  const scoredAchievements = REFERENCE_ACHIEVEMENTS.map((ach) => {
+    let score = 0;
+    for (const term of allTargetTerms) {
+      if (ach.techStack.some((tech) => tech.toLowerCase() === term || term.includes(tech.toLowerCase()))) {
+        score += 3;
+      }
+      if (ach.description.toLowerCase().includes(term)) {
+        score += 2;
+      }
+    }
+    return { ach, score };
+  });
+
+  scoredAchievements.sort((a, b) => b.score - a.score);
+  const top2 = scoredAchievements.slice(0, 2).map((s) => s.ach);
+
+  const matchedStack = Array.from(
+    new Set(
+      top2.flatMap((t) => t.techStack).filter((tech) => allTargetTerms.some((term) => term === tech.toLowerCase()))
+    )
+  );
+
+  const contactGreeting = jobProfile.contactName ? `Hi ${jobProfile.contactName},` : "Hi Hiring Team,";
+  const roleName = jobProfile.targetRole || "Software Engineer";
+  const compName = jobProfile.companyName || "your team";
+
+  // Build high-converting, ~120-word email
+  const subject = `Application: ${roleName} - ${candidateName}`;
+
+  const ach1 = top2[0];
+  const ach2 = top2[1];
+
+  const bodyParagraphs = [
+    contactGreeting,
+    `I am writing to apply for the ${roleName} role at ${compName}. With expertise building distributed systems, real-time microservices, and high-performance backends, my engineering background directly matches your target stack.`,
+    `At ${ach1.company}, I ${ach1.description}, achieving ${ach1.metric}. Additionally, at ${ach2.company}, I ${ach2.description}, delivering ${ach2.metric}. Both initiatives required rigorous focus on high availability, scalable concurrency, and robust data pipelines.`,
+    `I have attached my tailored resume and look forward to discussing how my experience can support ${compName}'s goals.`,
+    `Best regards,\n${candidateName}\n${candidateEmail}`,
+  ];
+
+  const fullBody = bodyParagraphs.join("\n\n");
+  const words = fullBody.trim().split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+
+  return {
+    subject,
+    body: fullBody,
+    wordCount,
+    referencedProjects: top2.map((t) => `${t.company}: ${t.projectTitle}`),
+    keyMetricsUsed: top2.map((t) => t.metric),
+    targetStackMatched: matchedStack.length > 0 ? matchedStack : jobProfile.targetStack.slice(0, 3),
+  };
+}

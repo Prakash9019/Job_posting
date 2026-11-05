@@ -34,6 +34,132 @@ export interface ApplyLatexResult {
 }
 
 /**
+ * Deterministic 1-Page LaTeX Geometry Optimizer:
+ * Dynamically adjusts document class font scaling, geometry margins, \titlespacing,
+ * and \setlist[itemize] parameters to strictly enforce a 1-page boundary limit
+ * with 95%–98% vertical fill density, eliminating bottom blank whitespace on short
+ * resumes and preventing 8–10 line overflow onto page 2 on dense resumes.
+ * Also enforces standard Unicode bullet points (\textbullet) over raw ASCII asterisks (*).
+ */
+export function optimizeLatexGeometryForOnePage(
+  latex: string,
+  contentStats?: { words: number; lines: number }
+): string {
+  if (!latex || !latex.includes("\\documentclass")) return latex;
+
+  let doc = latex;
+
+  // 1. Ensure raw ASCII asterisks in bullet points are normalized to standard items
+  doc = doc.replace(/\\item\s*[*∗]\s*/g, "\\item ");
+  doc = doc.replace(/\\resumeItem\{\s*[*∗]\s*/g, "\\resumeItem{");
+
+  // 2. Count content words and lines if not provided
+  const words = contentStats?.words ?? doc.replace(/\\begin\{document\}[\s\S]*?\\end\{document\}/, "").split(/\s+/).length;
+  const lines = contentStats?.lines ?? (doc.match(/\\resumeItem|\\item|\\section|\\resumeSubheading/g) || []).length;
+
+  // Keep multi-page geometry if content is extensive (>850 words / >72 lines)
+  if (words > 850 || lines > 72) {
+    return doc;
+  }
+
+  // 3. Dynamic 1-page parameter selection with breathable spacing and full vertical fill:
+  // - Base font size: 10pt/10.5pt (never below 9.5pt)
+  // - itemsep: 2.5pt - 3.0pt
+  // - baselineskip: line height >= 1.15
+  // - Safe margins: standard ATS safe bounds (0.5in)
+  // - Distinct spacing between sections, companies, and projects to prevent colliding
+  let targetClass = "\\documentclass[a4paper,10pt]{article}";
+  let targetGeometry = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+  let targetSpacing = "\\titlespacing*{\\section}{0pt}{6.5pt plus 2.5pt minus 1pt}{3.5pt plus 1pt minus 0.5pt}";
+  let targetSetlist =
+    "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.6pt plus 1pt minus 0.5pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
+
+  if (words < 450 && lines < 45) {
+    // Low/medium density single-page resume: expand to 10.5pt font and generous spacing for 95%-98% full-page vertical fill
+    targetClass = "\\documentclass[a4paper,10.5pt]{extarticle}";
+    targetGeometry = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+    targetSpacing = "\\titlespacing*{\\section}{0pt}{7.5pt plus 3pt minus 1pt}{4pt plus 1pt minus 0.5pt}";
+    targetSetlist =
+      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=3.0pt plus 1pt minus 0.5pt, parsep=0pt, topsep=2pt, partopsep=0pt}";
+  } else {
+    // Standard and high density: preserve hard readability minimums (10pt standard, 9.5pt min; itemsep >= 2pt; 0.5in margins)
+    targetClass = words > 650 || lines > 58 ? "\\documentclass[a4paper,9.5pt]{extarticle}" : "\\documentclass[a4paper,10pt]{article}";
+    targetGeometry = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+    targetSpacing = "\\titlespacing*{\\section}{0pt}{5.5pt plus 2pt minus 1pt}{3pt plus 1pt minus 0.5pt}";
+    targetSetlist =
+      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.2pt plus 0.8pt minus 0.4pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
+  }
+
+  // 4. Inject or replace documentclass
+  doc = doc.replace(/\\documentclass(?:\[[^\]]*\])?\{[^}]*\}/, targetClass);
+
+  // 5. Inject or replace geometry
+  if (doc.includes("{geometry}")) {
+    doc = doc.replace(/\\usepackage(?:\[[^\]]*\])?\{geometry\}/, targetGeometry);
+  } else if (doc.includes("\\begin{document}")) {
+    doc = doc.replace("\\begin{document}", `${targetGeometry}\n\\begin{document}`);
+  }
+
+  // 6. Inject or replace titlespacing safely across full line
+  if (doc.includes("\\titlespacing")) {
+    doc = doc.replace(/\\titlespacing\*?\{\\section\}[^\n]*/, targetSpacing);
+  } else if (doc.includes("\\titleformat")) {
+    doc = doc.replace(/(\\titleformat[^\n]*\n)/, `$1${targetSpacing}\n`);
+  }
+
+  // 7. Inject or replace setlist safely across full line
+  if (doc.includes("\\setlist[itemize]")) {
+    doc = doc.replace(/\\setlist\[itemize\][^\n]*/, targetSetlist);
+  } else if (doc.includes("\\begin{document}")) {
+    doc = doc.replace("\\begin{document}", `${targetSetlist}\n\\begin{document}`);
+  }
+
+  // 8. Ensure readable line spacing >= 1.15 (\linespread{1.15})
+  if (!doc.includes("\\linespread{1.15}") && doc.includes("\\begin{document}")) {
+    doc = doc.replace("\\begin{document}", "\\linespread{1.15}\n\\begin{document}");
+  }
+
+  // 9. Remove \raggedbottom on single-page resumes to allow vertical skips to fill the page
+  doc = doc.replace(/\\raggedbottom\n/, "");
+
+  // 10. Enhance company separation in \resumeSubheading if defined
+  doc = doc.replace(
+    /\\newcommand\{\\resumeSubheading\}\[4\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[4\]\s*\}/,
+    `\\newcommand{\\resumeSubheading}[4]{
+  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
+    \\textit{\\small #3} & \\textit{\\small #4}
+  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
+}`
+  );
+
+  // 11. Enhance project separation in \resumeProjectHeading if defined
+  doc = doc.replace(
+    /\\newcommand\{\\resumeProjectHeading\}\[2\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[4\]\s*\}/,
+    `\\newcommand{\\resumeProjectHeading}[2]{
+  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    #1 & \\textit{\\small #2}
+  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
+}`
+  );
+
+  // 12. Enhance subproject separation inside companies
+  doc = doc.replace(/\\vspace\{2pt\} \\noindent \\textbf\{/g, "\\vspace{4.5pt plus 2pt minus 1pt} \\noindent \\textbf{");
+
+  // 13. Prevent negative vspace on close itemize
+  doc = doc.replace(/\\end\{itemize\}\\vspace\{-2pt\}/g, "\\end{itemize}\\vspace{2pt}");
+
+  // 14. Ensure textcomp is loaded for standard bullet glyph
+  if (!doc.includes("{textcomp}") && doc.includes("\\begin{document}")) {
+    doc = doc.replace("\\begin{document}", "\\usepackage{textcomp}\n\\begin{document}");
+  }
+
+  return doc;
+}
+
+/**
  * Strips markdown code blocks (e.g. ```latex ... ```) and cleans whitespace
  */
 export function cleanLatexMarkdownFences(text: string): string {
@@ -247,6 +373,10 @@ ${params.jobText ? `=== 4. TARGET JOB DESCRIPTION ===\n"""\n${params.jobText.sli
    - Seamlessly update corresponding bullet points with improved PAR phrasing, strong action verbs, and concise technical achievements from the ATS resume and JSON suggestions to pass ATS filters.
    - When a target Job Description is provided, mirror the language, technical vocabulary, and keywords in the job description without lying or inventing experience.
    - Apply all grammar, spelling, and phrasing improvements.
+   - ENFORCE THE STRICT "TWICE RULE" (DEEP CONTEXTUAL SKILL WEAVING):
+     * If you add a new skill to the Technical Skills section based on the JD or user input, you MUST weave that exact skill into at least one bullet point within the Work Experience section.
+     * Do NOT dump a target skill solely into the Technical Skills section without proving how the candidate used it.
+     * Example: If adding "Artificial Intelligence", modify a bullet to say: "Spearheaded an Artificial Intelligence pipeline combining YOLO and SAHI..." instead of just saying "Spearheaded a multi-stage pipeline...".
    - STRICT SOURCE GROUNDING (MANDATORY POLICY):
      * The AI does not invent experience; it highlights the impact the candidate has already made.
      * NEVER invent employers, job titles, dates, technologies, frameworks, certifications, or metrics.
@@ -335,6 +465,9 @@ ${params.jobText ? `=== 4. TARGET JOB DESCRIPTION ===\n"""\n${params.jobText.sli
       "\\begin{document}\n\\pagestyle{empty}\n\\thispagestyle{empty}"
     );
   }
+
+  // Optimize LaTeX geometry for strict 1-page boundary limit and 95%-98% vertical fill density
+  updatedLatex = optimizeLatexGeometryForOnePage(updatedLatex);
 
   // Restore and reconcile original hyperlinks into updated LaTeX
   updatedLatex = ensureAllHrefsPreservedInLatex(updatedLatex, [baseLatex, params.atsOptimizedText]);

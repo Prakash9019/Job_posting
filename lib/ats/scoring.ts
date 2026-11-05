@@ -1,4 +1,15 @@
-export type Requirement = { keyword: string; importance: "required" | "preferred"; jobEvidence: string };
+export type RequirementCategory =
+  | "primaryTechStack"
+  | "architectureAndDomainKeywords"
+  | "coreResponsibilities";
+
+export type Requirement = {
+  keyword: string;
+  importance: "required" | "preferred";
+  jobEvidence: string;
+  category?: RequirementCategory;
+  weightMultiplier?: number;
+};
 export type ResumeLine = { number: number; text: string; section: string };
 export type Finding = { severity: "high" | "medium" | "low"; line: number | null; quote: string; issue: string; suggestion: string };
 export type Deduction = { points: number; reason: string; category: string };
@@ -64,7 +75,9 @@ const aliases = [
   ["websocket", "websockets", "socket.io", "ws"],
   ["webrtc", "web rtc", "real-time streaming"],
   ["microservices", "microservice", "microservice architecture"],
-  ["distributed systems", "distributed computing", "scalable systems"],
+  ["distributed systems", "distributed computing", "scalable systems", "high scale", "distributed architecture"],
+  ["pub/sub", "pub sub", "publish subscribe", "message queue", "kafka", "rabbitmq", "event-driven", "event driven", "apache kafka"],
+  ["distributed state", "distributed consensus", "raft", "paxos", "sharding", "replication", "state management"],
   ["oop", "object-oriented programming", "object oriented programming"],
   ["dsa", "data structures and algorithms", "data structures", "algorithms"],
   ["machine learning", "ml", "deep learning", "dl"],
@@ -392,6 +405,17 @@ function countKeywordOccurrences(text: string, keyword: string): number {
   return count;
 }
 
+const ARCHITECTURE_AND_DOMAIN = new Set([
+  "microservices", "distributed systems", "pub/sub", "distributed state",
+  "websocket", "webrtc", "rest", "graphql", "system design", "oop", "dsa",
+  "machine learning", "artificial intelligence", "llm", "rag", "agentic ai",
+  "nlp", "computer vision",
+]);
+
+const CORE_RESPONSIBILITIES = new Set([
+  "ci/cd", "agile", "sql", "git", "linux",
+]);
+
 /**
  * Deterministically extracts technical requirements from Job Description text using the synonym taxonomy.
  */
@@ -413,10 +437,23 @@ export function extractRequirementsFromJobText(jobText: string): Requirement[] {
       seen.add(canonical);
       // Count occurrences in JD: if mentioned 2+ times or near "required/must", mark as required
       const occ = countKeywordOccurrences(cleanJD, canonical);
+
+      let category: RequirementCategory = "primaryTechStack";
+      let weightMultiplier = 2.0;
+      if (ARCHITECTURE_AND_DOMAIN.has(canonical)) {
+        category = "architectureAndDomainKeywords";
+        weightMultiplier = 1.5;
+      } else if (CORE_RESPONSIBILITIES.has(canonical)) {
+        category = "coreResponsibilities";
+        weightMultiplier = 1.0;
+      }
+
       extracted.push({
         keyword: canonical.toUpperCase() === canonical ? canonical : canonical.replace(/\b\w/g, (c) => c.toUpperCase()),
         importance: occ >= 2 ? "required" : "preferred",
         jobEvidence: "Deterministically matched in Job Description",
+        category,
+        weightMultiplier,
       });
     }
   }
@@ -741,12 +778,24 @@ export function scoreResume(text: string, requirements: Requirement[] = [], rawJ
     const totalOccurrences = countKeywordOccurrences(fullText, requirement.keyword);
     const stuffingMultiplier = totalOccurrences > 8 ? 0.7 : 1.0;
 
+    const categoryMultiplier =
+      requirement.weightMultiplier ??
+      (requirement.category === "primaryTechStack"
+        ? 2.0
+        : requirement.category === "architectureAndDomainKeywords"
+        ? 1.5
+        : requirement.category === "coreResponsibilities"
+        ? 1.0
+        : 1.0);
+    const baseWeight = requirement.importance === "required" ? 3 : 1;
+
     return {
       ...requirement,
+      matched: evidence.length > 0,
       evidence,
       placement: inSkills && inExperience ? "Skills + experience" : inExperience ? "Experience / projects" : inSkills ? "Skills only" : evidence.length ? "Elsewhere" : "Not found",
       multiplier: multiplier * stuffingMultiplier,
-      weight: requirement.importance === "required" ? 3 : 1,
+      weight: baseWeight * categoryMultiplier,
     };
   });
 

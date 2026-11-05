@@ -2,9 +2,36 @@ import { GoogleGenAI } from "@google/genai";
 import mammoth from "mammoth";
 import { extractResumeText, isReadableResumeText } from "@/lib/ai/resume";
 import { latexToPlainText } from "./latex-text";
-import { normalizeWrappedBullets } from "./scoring";
+import {
+  normalizeWrappedBullets,
+  extractRequirementsFromJobText,
+  type Requirement,
+  type RequirementCategory,
+} from "./scoring";
+import { sanitizeOcrText } from "./hyperlinks";
 
-export { latexToPlainText, normalizeWrappedBullets };
+export { latexToPlainText, normalizeWrappedBullets, sanitizeOcrText };
+
+export interface CompetencyMatrix {
+  primaryTechStack: Requirement[];
+  architectureAndDomainKeywords: Requirement[];
+  coreResponsibilities: Requirement[];
+}
+
+/**
+ * Classifies Job Description requirements into:
+ * 1. primaryTechStack (2.0x weight)
+ * 2. architectureAndDomainKeywords (1.5x weight — e.g. Microservices, Pub/Sub, Distributed State)
+ * 3. coreResponsibilities (1.0x weight)
+ */
+export function extractCompetencyMatrix(jobText: string): CompetencyMatrix {
+  const reqs = extractRequirementsFromJobText(jobText);
+  return {
+    primaryTechStack: reqs.filter((r) => r.category === "primaryTechStack"),
+    architectureAndDomainKeywords: reqs.filter((r) => r.category === "architectureAndDomainKeywords"),
+    coreResponsibilities: reqs.filter((r) => r.category === "coreResponsibilities"),
+  };
+}
 
 export const MAX_ATS_FILE_BYTES = 3 * 1024 * 1024;
 
@@ -224,7 +251,7 @@ export async function parseATSFile(
   if (isImage) {
     const raw = await transcribeDocumentWithAI(buffer, file.type || "image/png", imagesOnly);
     return {
-      text: normalizeWrappedBullets(raw),
+      text: sanitizeOcrText(normalizeWrappedBullets(raw)),
       method: "AI transcription (hyperlinks and formatting preserved)",
     };
   }
@@ -251,7 +278,7 @@ export async function parseATSFile(
     if (file.type === "application/pdf" && error instanceof Error && error.message.startsWith("No readable resume")) {
       const raw = await transcribeDocumentWithAI(buffer, file.type, false);
       return {
-        text: normalizeWrappedBullets(raw),
+        text: sanitizeOcrText(normalizeWrappedBullets(raw)),
         method: "AI transcription of scanned PDF (hyperlinks preserved)",
       };
     }

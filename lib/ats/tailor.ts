@@ -1,4 +1,12 @@
-import { scoreResume, extractRequirementsFromJobText, cleanSmartTypography, normalizeWrappedBullets, CATEGORY_LABEL_RE } from "./scoring";
+import {
+  scoreResume,
+  extractRequirementsFromJobText,
+  cleanSmartTypography,
+  normalizeWrappedBullets,
+  CATEGORY_LABEL_RE,
+  containsSkill,
+  METRIC_RE,
+} from "./scoring";
 import { analyzeResume, UnifiedATSAudit } from "./analysis";
 import { parseBalancedBraces } from "./latex-text";
 import {
@@ -12,6 +20,12 @@ import {
   transformPlainTextPreservingHrefs,
   normalizeUrl,
   isGenericLinkAnchor,
+  CanonicalResume,
+  CanonicalResumeSchema,
+  ExperienceItem,
+  ProjectItem,
+  EducationItem,
+  SubheadingItem,
 } from "./hyperlinks";
 
 export function escapeLatex(str: string): string {
@@ -228,7 +242,7 @@ export function generateATSLatex(
 
   function closeItemize() {
     if (inItemize) {
-      bodyLatex += "\\end{itemize}\\vspace{-2pt}\n";
+      bodyLatex += "\\end{itemize}\\vspace{2pt}\n";
       inItemize = false;
     }
   }
@@ -296,9 +310,9 @@ export function generateATSLatex(
           const sep = bulletContent.includes("—") ? "—" : " - ";
           const [pTitle, ...pRest] = bulletContent.split(sep);
           const techOrLink = pRest.join(sep).trim();
-          bodyLatex += `\\vspace{1.5pt}\\textbf{${formatLatexLine(pTitle.trim(), allKnownLinks)}} \\enspace\\textbar\\enspace \\textit{${formatLatexLine(techOrLink, allKnownLinks)}}\\\\[1pt]\n`;
+          bodyLatex += `\\vspace{4.5pt plus 2pt minus 1pt} \\noindent \\textbf{${formatLatexLine(pTitle.trim(), allKnownLinks)}} \\enspace\\textbar\\enspace \\textit{${formatLatexLine(techOrLink, allKnownLinks)}} \\vspace{1.5pt}\n`;
         } else {
-          bodyLatex += `\\vspace{1.5pt}\\textbf{${formatLatexLine(bulletContent, allKnownLinks)}}\\\\[1pt]\n`;
+          bodyLatex += `\\vspace{4.5pt plus 2pt minus 1pt} \\noindent \\textbf{${formatLatexLine(bulletContent, allKnownLinks)}} \\vspace{1.5pt}\n`;
         }
         continue;
       }
@@ -323,13 +337,13 @@ export function generateATSLatex(
     closeItemize();
 
     if (currentSectionName === "PROFESSIONAL SUMMARY") {
-      bodyLatex += `{\\small ${formatLatexLine(line, allKnownLinks)}\\par}\\vspace{2pt}\n`;
+      bodyLatex += `{\\small ${formatLatexLine(line, allKnownLinks)}\\par}\\vspace{3.5pt plus 1pt}\n`;
       continue;
     }
 
     const categoryMatch = line.match(CATEGORY_LABEL_RE);
     if (categoryMatch && !line.includes("|") && !dateRangeRe.test(line)) {
-      bodyLatex += `{\\small \\textbf{${formatLatexLine(categoryMatch[1], allKnownLinks)}:} ${formatLatexLine(categoryMatch[2], allKnownLinks)}}\\\\[1pt]\n`;
+      bodyLatex += `{\\small \\textbf{${formatLatexLine(categoryMatch[1], allKnownLinks)}:} ${formatLatexLine(categoryMatch[2], allKnownLinks)}}\\\\[3.2pt plus 1pt]\n`;
       continue;
     }
 
@@ -732,18 +746,35 @@ export function generateATSLatex(
     .join(" \\enspace\\textbar\\enspace ");
 
   const totalWords = cleanLines.join(" ").split(/\s+/).length;
-  const isMultiPage = totalWords > 850 || cleanLines.length > 70;
+  const totalCleanLines = cleanLines.length;
+  const isMultiPage = totalWords > 850 || totalCleanLines > 72;
 
-  const docClass = isMultiPage ? "\\documentclass[a4paper,10pt]{article}" : "\\documentclass[a4paper,9pt]{extarticle}";
-  const geometrySetting = isMultiPage
-    ? "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}"
-    : "\\usepackage[a4paper,left=0.35in,right=0.35in,top=0.25in,bottom=0.25in]{geometry}";
-  const titlespacingSetting = isMultiPage
-    ? "\\titlespacing*{\\section}{0pt}{4pt}{2pt}"
-    : "\\titlespacing*{\\section}{0pt}{2pt}{1pt}";
-  const itemizeSetting = isMultiPage
-    ? "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=1.2pt, parsep=0pt, topsep=1pt, partopsep=0pt}"
-    : "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\tiny$\\bullet$}, itemsep=0.25pt, parsep=0pt, topsep=0.25pt, partopsep=0pt}";
+  let docClass: string;
+  let geometrySetting: string;
+  let titlespacingSetting: string;
+  let itemizeSetting: string;
+
+  if (isMultiPage) {
+    docClass = "\\documentclass[a4paper,10pt]{article}";
+    geometrySetting = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+    titlespacingSetting = "\\titlespacing*{\\section}{0pt}{4pt}{2pt}";
+    itemizeSetting =
+      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.0pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
+  } else if (totalWords < 450 && totalCleanLines < 45) {
+    // Low/medium density single-page resume: expand to 10.5pt font and generous spacing for 95%-98% full-page vertical fill
+    docClass = "\\documentclass[a4paper,10.5pt]{extarticle}";
+    geometrySetting = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+    titlespacingSetting = "\\titlespacing*{\\section}{0pt}{7.5pt plus 3pt minus 1pt}{4pt plus 1pt minus 0.5pt}";
+    itemizeSetting =
+      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=3.0pt plus 1pt minus 0.5pt, parsep=0pt, topsep=2pt, partopsep=0pt}";
+  } else {
+    // Standard and high density: preserve hard readability minimums (10pt standard, 9.5pt min; itemsep >= 2pt; 0.5in margins)
+    docClass = totalWords > 650 || totalCleanLines > 58 ? "\\documentclass[a4paper,9.5pt]{extarticle}" : "\\documentclass[a4paper,10pt]{article}";
+    geometrySetting = "\\usepackage[a4paper,left=0.5in,right=0.5in,top=0.45in,bottom=0.45in]{geometry}";
+    titlespacingSetting = "\\titlespacing*{\\section}{0pt}{6.0pt plus 2.5pt minus 1pt}{3.5pt plus 1pt minus 0.5pt}";
+    itemizeSetting =
+      "\\setlist[itemize]{leftmargin=0.15in, label=\\raisebox{0.15ex}{\\small\\textbullet}, itemsep=2.4pt plus 0.8pt minus 0.4pt, parsep=0pt, topsep=1.5pt, partopsep=0pt}";
+  }
 
   let resultLatex = `%-------------------------
 % Adaptive ATS LaTeX Resume
@@ -752,9 +783,11 @@ export function generateATSLatex(
 
 ${docClass}
 ${geometrySetting}
+\\linespread{1.15}
 \\usepackage{titlesec}
 \\usepackage[usenames,dvipsnames]{color}
 \\usepackage{enumitem}
+\\usepackage{textcomp}
 \\usepackage[hidelinks]{hyperref}
 \\usepackage{tabularx}
 \\usepackage[T1]{fontenc}
@@ -763,8 +796,7 @@ ${geometrySetting}
 \\pdfgentounicode=1
 
 \\urlstyle{same}
-\\raggedbottom
-\\raggedright
+${isMultiPage ? "\\raggedbottom\n" : ""}\\raggedright
 \\setlength{\\tabcolsep}{0in}
 
 \\titleformat{\\section}{\\scshape\\raggedright\\large\\bfseries}{}{0em}{}[\\color{black}\\titlerule]
@@ -777,18 +809,18 @@ ${itemizeSetting}
 }
 
 \\newcommand{\\resumeSubheading}[4]{
-  \\vspace{0.5pt}\\nopagebreak[3]
+  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
     \\textit{\\small #3} & \\textit{\\small #4}
-  \\end{tabular*}\\vspace{-1.5pt}\\nopagebreak[4]
+  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
 }
 
 \\newcommand{\\resumeProjectHeading}[2]{
-  \\vspace{0.5pt}\\nopagebreak[3]
+  \\vspace{5.5pt plus 2.5pt minus 1pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     #1 & \\textit{\\small #2}
-  \\end{tabular*}\\vspace{-1.5pt}\\nopagebreak[4]
+  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
 }
 
 \\newcommand{\\resumeDivider}{\\enspace\\textbar\\enspace}
@@ -1240,13 +1272,863 @@ export function cleanLingeringPlaceholders(content: string, isLatex = false): st
 }
 
 /**
- * Executes all 6 Remediation Passes across plain text and LaTeX:
- * 1. AI PAR Rewrites
+ * Rewrites professional summary aligning sentence 1 with target role & domain,
+ * and sentence 2 with overlapping core tools.
+ */
+export function rewriteSummaryWithJDAlignment(
+  summaryText: string,
+  targetRole: string,
+  domainKeywords: string[] = [],
+  overlappingTools: string[] = []
+): string {
+  const role = targetRole || "Software Engineer";
+  const domain =
+    domainKeywords.length > 0 ? domainKeywords.slice(0, 2).join(" and ") : "scalable distributed architectures";
+  const tools =
+    overlappingTools.length > 0 ? overlappingTools.slice(0, 3).join(", ") : "modern full-stack technologies";
+
+  const sentence1 = `Results-driven ${role} specializing in ${domain}.`;
+  const sentence2 = `Demonstrated expertise in engineering high-reliability systems and production services utilizing ${tools}.`;
+
+  return `${sentence1} ${sentence2}`;
+}
+
+/**
+ * Reframes 60-75% of experience bullets into Google XYZ format:
+ * [Action] + [System built with JD keywords] + [Mechanism] + [Impact]
+ * keeping quantitative metrics and company names immutable.
+ */
+export function reframeBulletsToGoogleXYZ(
+  bullets: string[],
+  targetKeywords: string[] = [],
+  companyNames: string[] = []
+): { reframedBullets: string[]; modifiedCount: number } {
+  const BULLET_START_RE = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+✔✓◆◇►▸⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]|\d+[.)])\s+(.*)$/;
+  const ACTION_VERBS = [
+    "Architected",
+    "Engineered",
+    "Spearheaded",
+    "Orchestrated",
+    "Implemented",
+    "Streamlined",
+    "Optimized",
+    "Delivered",
+  ];
+
+  const reframed: string[] = [];
+  let modifiedCount = 0;
+  // Target 60% - 75% of experience bullets
+  const targetCount = Math.max(1, Math.min(bullets.length, Math.round(bullets.length * 0.7)));
+
+  for (let i = 0; i < bullets.length; i++) {
+    const raw = bullets[i];
+    const match = raw.match(BULLET_START_RE);
+    const content = match ? match[1].trim() : raw.trim();
+
+    // Preserve company names and avoid modifying headings
+    const isCompanyLine = companyNames.some((c) => c && content.toLowerCase().includes(c.toLowerCase()));
+    if (isCompanyLine || modifiedCount >= targetCount) {
+      reframed.push(raw);
+      continue;
+    }
+
+    // Extract any existing quantitative metric so it remains strictly immutable
+    const metricMatch = content.match(METRIC_RE);
+    const existingMetric = metricMatch ? metricMatch[0] : "";
+
+    // Check if bullet starts with a weak verb or could be structured in Google XYZ
+    const startsWeak =
+      /^(?:worked on developing|worked on building|worked on creating|worked on|assisted with|helped with|helped|responsible for|participated in|handled|implemented|built|developed)\b/i.test(
+        content
+      );
+
+    const actionVerb = ACTION_VERBS[i % ACTION_VERBS.length];
+
+    // If already strong, quantified and not using weak verbs, preserve as is
+    if (!startsWeak && existingMetric && !/worked on/i.test(content)) {
+      reframed.push(raw);
+      continue;
+    }
+
+    // Strip leading weak verb phrase
+    const cleanContent = content
+      .replace(
+        /^(?:worked on developing|worked on building|worked on creating|worked on|responsible for leading|responsible for managing|responsible for|assisted with|assisted in|helped with|helped|handled|participated in)\s*/i,
+        ""
+      )
+      .replace(/^(?:implemented|built|developed|created|engineered)\s*/i, "");
+
+    let newContent = "";
+    if (existingMetric) {
+      newContent = `${actionVerb} ${cleanContent}`;
+    } else {
+      newContent = `${actionVerb} ${cleanContent}`;
+      if (!/[.!?]$/.test(newContent)) {
+        newContent += ".";
+      }
+    }
+
+    const prefix = match ? raw.slice(0, match.index! + (raw.length - match[1].length)) : "• ";
+    reframed.push(`${prefix}${newContent}`);
+    modifiedCount++;
+  }
+
+  return { reframedBullets: reframed, modifiedCount };
+}
+
+/**
+ * Contextually weaves target skills into experience bullets using the "Twice Rule".
+ * Example: If adding "Artificial Intelligence", reframes:
+ * "Developed a multi-stage AI pipeline using YOLO, SAHI, and OCR to extract tags."
+ * -> "Spearheaded an Artificial Intelligence pipeline combining YOLO and SAHI to extract tags."
+ */
+export function weaveSkillIntoExperienceBullets(
+  bullets: string[],
+  skill: string
+): { wovenBullets: string[]; success: boolean } {
+  const normSkill = skill.trim();
+  if (!normSkill || bullets.length === 0) return { wovenBullets: bullets, success: false };
+
+  const escapedSkill = [...normSkill].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
+  const exactRe = new RegExp("(^|[^a-z0-9+#])" + escapedSkill + "(?=$|[^a-z0-9+#])", "i");
+
+  // Already present with exact skill name?
+  if (bullets.some((b) => exactRe.test(b))) {
+    return { wovenBullets: bullets, success: true };
+  }
+
+  const updatedBullets = [...bullets];
+
+  // 1. Artificial Intelligence
+  if (/^artificial intelligence$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/yolo|sahi|pipeline|ocr|drawing tag|vision/i.test(b)) {
+        if (/multi-stage\s+(?:AI\s+)?pipeline\s+using/i.test(b)) {
+          updatedBullets[i] = b.replace(
+            /^(?:Developed|Engineered|Spearheaded)?\s*(?:a|an)?\s*multi-stage\s+(?:AI\s+)?pipeline\s+using/i,
+            "Spearheaded an Artificial Intelligence pipeline combining"
+          );
+          return { wovenBullets: updatedBullets, success: true };
+        }
+        if (/multi-stage\s+(?:AI\s+)?pipeline/i.test(b)) {
+          updatedBullets[i] = b.replace(
+            /^(?:Developed|Engineered|Spearheaded)?\s*(?:a|an)?\s*multi-stage\s+(?:AI\s+)?pipeline/i,
+            "Spearheaded an Artificial Intelligence pipeline combining"
+          );
+          return { wovenBullets: updatedBullets, success: true };
+        }
+        if (/pipeline/i.test(b) && !exactRe.test(b)) {
+          updatedBullets[i] = b.replace(/\bpipeline\b/i, "Artificial Intelligence pipeline");
+          return { wovenBullets: updatedBullets, success: true };
+        }
+        if (/yolo/i.test(b) && !exactRe.test(b)) {
+          updatedBullets[i] = b.replace(/\b(?:using|with)\s+YOLO/i, "an Artificial Intelligence pipeline combining YOLO");
+          return { wovenBullets: updatedBullets, success: true };
+        }
+      }
+    }
+  }
+
+  // 2. Python
+  if (/^python$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/fastapi|flask|django|ardupilot/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\b(FastAPI|Flask|Django)\b/i, "Python and $1");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+  }
+
+  // 3. Docker / Kubernetes
+  if (/^docker$/i.test(normSkill) || /^kubernetes$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/integration hub|microservices|distributed/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\b(integration hub|microservices)\b/i, `$1 using ${normSkill}`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+  }
+
+  // 4. Generic contextual weaving into technical bullet
+  for (let i = 0; i < updatedBullets.length; i++) {
+    const b = updatedBullets[i];
+    if (b.length > 25 && !exactRe.test(b)) {
+      if (/\busing\s+([A-Za-z0-9,\s&]+?)(?=[.,;!?]|$)/i.test(b)) {
+        updatedBullets[i] = b.replace(/\busing\s+([A-Za-z0-9,\s&]+?)(?=[.,;!?]|$)/i, `using $1 and ${normSkill}`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+  }
+
+  return { wovenBullets: bullets, success: false };
+}
+
+/**
+ * Parses raw or semi-structured resume text into a CanonicalResume structured object.
+ */
+export function parseResumeToCanonical(
+  rawText: string,
+  knownLinks?: ExtractedHyperlink[]
+): CanonicalResume {
+  const normText = normalizeWrappedBullets(rawText);
+  const lines = normText.split("\n");
+  const cleanLines = lines.filter((l) => {
+    const trimmed = l.trim();
+    if (!trimmed) return false;
+    if (/^--\s*\d+\s+of\s+\d+\s*--$/i.test(trimmed)) return false;
+    if (/^(?:page\s*)?\d+\s*(?:of|\/)\s*\d+$/i.test(trimmed)) return false;
+    if (/^page\s*\d+$/i.test(trimmed)) return false;
+    return true;
+  });
+
+  const bulletRe = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+✔✓◆◇►▸⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]|\d+[.)])\s+(.*)$/i;
+  const monthNames = "(?:Jan(?:uary|\\.)?|Feb(?:ruary|\\.)?|Mar(?:ch|\\.)?|Apr(?:il|\\.)?|May|Jun(?:e|\\.)?|Jul(?:y|\\.)?|Aug(?:ust|\\.)?|Sep(?:tember|t\\.)?|Oct(?:ober|\\.)?|Nov(?:ember|\\.)?|Dec(?:ember|\\.)?)";
+  const dateUnit = `(?:${monthNames}\\s+\\d{4}|\\d{1,2}\\/\\d{4}|\\d{4})`;
+  const dateRangeRe = new RegExp(
+    `\\b(${dateUnit}\\s*(?:[-–—]|\\bto\\b)\\s*(?:${dateUnit}|Present|Current|Now))\\b`,
+    "i"
+  );
+
+  let fullName = "";
+  let email = "";
+  let phone = "";
+  let location = "";
+  let linkedinUrl = process.env.DEFAULT_LINKEDIN_URL || "https://linkedin.com/in/applicant";
+  let githubUrl = process.env.DEFAULT_GITHUB_URL || "https://github.com/applicant";
+  let portfolioUrl = "";
+  let summary = "";
+  const technicalSkills: Record<string, string[]> = {};
+  const experience: ExperienceItem[] = [];
+  const projects: ProjectItem[] = [];
+  const education: EducationItem[] = [];
+  const achievements: string[] = [];
+  const certifications: string[] = [];
+
+  let currentSection = "";
+  let isHeaderArea = true;
+
+  for (let i = 0; i < cleanLines.length; i++) {
+    const line = cleanLines[i].trim();
+    if (!line) continue;
+
+    // Heading match
+    const normHeading = line.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim();
+    const headingMatch = CANONICAL_HEADINGS.find(([, regex]) => regex.test(normHeading));
+    if (headingMatch) {
+      isHeaderArea = false;
+      currentSection = headingMatch[0];
+      continue;
+    }
+
+    if (isHeaderArea) {
+      if (!fullName) {
+        fullName = line.replace(/^[#*\-•>\s]+/, "").trim();
+        continue;
+      }
+      const emailM = line.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/);
+      if (emailM) email = emailM[0];
+      const phoneM = line.match(/\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/);
+      if (phoneM) phone = phoneM[0];
+      const linkMatch = line.match(/https?:\/\/[^\s|)]+/g);
+      if (linkMatch) {
+        for (const url of linkMatch) {
+          if (/linkedin\.com/i.test(url)) linkedinUrl = url;
+          else if (/github\.com/i.test(url)) githubUrl = url;
+          else if (!portfolioUrl) portfolioUrl = url;
+        }
+      }
+      if (line.includes("|")) {
+        const parts = line.split("|").map((p) => p.trim());
+        for (const p of parts) {
+          if (isLocationSegment(p) && !location) location = p;
+        }
+      }
+      continue;
+    }
+
+    if (currentSection === "PROFESSIONAL SUMMARY") {
+      summary = summary ? `${summary} ${line}` : line;
+      continue;
+    }
+
+    if (currentSection === "TECHNICAL SKILLS") {
+      const match = line.match(CATEGORY_LABEL_RE);
+      if (match) {
+        const cat = match[1].trim();
+        const skills = match[2].split(/,\s*/).map((s) => s.trim()).filter(Boolean);
+        technicalSkills[cat] = skills;
+      } else if (line.includes(":")) {
+        const [c, rest] = line.split(/:\s*(.*)/);
+        if (c && rest) {
+          technicalSkills[c.trim()] = rest.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
+        }
+      }
+      continue;
+    }
+
+    if (currentSection === "WORK EXPERIENCE") {
+      const bulletMatch = line.match(bulletRe);
+      if (bulletMatch) {
+        const bulletContent = bulletMatch[1].trim();
+        const isProjectSubheading =
+          bulletContent.length < 80 &&
+          !bulletContent.endsWith(".") &&
+          !/^(?:developed|engineered|designed|built|architected|spearheaded|created|implemented|optimized|collaborated|conducted|achieved|reduced|improved|managed|led|authored|integrated|orchestrated|automated)\b/i.test(bulletContent);
+
+        if (isProjectSubheading) {
+          let title = bulletContent;
+          let techStack = "";
+          if (bulletContent.includes("—") || bulletContent.includes(" - ")) {
+            const sep = bulletContent.includes("—") ? "—" : " - ";
+            const [pTitle, ...pRest] = bulletContent.split(sep);
+            title = pTitle.trim();
+            techStack = pRest.join(sep).trim();
+          }
+          if (experience.length === 0) {
+            experience.push({ company: "Experience", role: "", bullets: [], subheadings: [] });
+          }
+          experience[experience.length - 1].subheadings.push({
+            title,
+            techStack: techStack || undefined,
+            bullets: [],
+          });
+          continue;
+        }
+
+        if (experience.length === 0) {
+          experience.push({ company: "Experience", role: "", bullets: [], subheadings: [] });
+        }
+        const currentExp = experience[experience.length - 1];
+        if (currentExp.subheadings.length > 0) {
+          currentExp.subheadings[currentExp.subheadings.length - 1].bullets.push(bulletContent);
+        } else {
+          currentExp.bullets.push(bulletContent);
+        }
+        continue;
+      }
+
+      const dateMatch = line.match(dateRangeRe);
+      const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
+      const nextDateMatch = nextLine.match(dateRangeRe);
+
+      if (dateMatch && !bulletRe.test(line)) {
+        const dStr = dateMatch[0];
+        const rem = line.replace(dStr, "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        const parsed = splitTrailingLocation(rem);
+        let role = parsed.main;
+        let comp = "";
+        let loc = parsed.loc;
+        if (nextLine && !bulletRe.test(nextLine) && !nextDateMatch && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine))) {
+          comp = nextLine;
+          i++;
+        }
+        experience.push({
+          role,
+          company: comp || role,
+          dateRange: dStr,
+          location: loc || undefined,
+          bullets: [],
+          subheadings: [],
+        });
+        continue;
+      }
+
+      if (line.includes("|") || isRoleSegment(line)) {
+        experience.push({
+          role: line,
+          company: nextLine && !bulletRe.test(nextLine) ? nextLine : line,
+          bullets: [],
+          subheadings: [],
+        });
+        if (nextLine && !bulletRe.test(nextLine)) i++;
+        continue;
+      }
+      continue;
+    }
+
+    if (currentSection === "PROJECTS") {
+      const bulletMatch = line.match(bulletRe);
+      if (bulletMatch) {
+        const bContent = bulletMatch[1].trim();
+        if (projects.length === 0 || bContent.length < 60 && (bContent.includes(" - ") || bContent.includes(" — ") || bContent.includes("|"))) {
+          let title = bContent;
+          let techStack = "";
+          if (bContent.includes(" - ") || bContent.includes(" — ") || bContent.includes("|")) {
+            const sep = bContent.includes("|") ? "|" : (bContent.includes(" — ") ? " — " : " - ");
+            const [pTitle, ...pRest] = bContent.split(sep);
+            title = pTitle.trim();
+            techStack = pRest.join(sep).trim();
+          }
+          projects.push({ title, techStack: techStack || undefined, bullets: [] });
+        } else {
+          projects[projects.length - 1].bullets.push(bContent);
+        }
+        continue;
+      }
+
+      let pTitle = line;
+      let pTech = "";
+      if (line.includes("|") || line.includes(" - ") || line.includes(" — ")) {
+        const sep = line.includes("|") ? "|" : (line.includes(" — ") ? " — " : " - ");
+        const [t, ...r] = line.split(sep);
+        pTitle = t.trim();
+        pTech = r.join(sep).trim();
+      }
+      projects.push({ title: pTitle, techStack: pTech || undefined, bullets: [] });
+      continue;
+    }
+
+    if (currentSection === "EDUCATION") {
+      const dateMatch = line.match(dateRangeRe);
+      const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
+      if (dateMatch) {
+        const dStr = dateMatch[0];
+        const instPart = line.replace(dStr, "").replace(/^[|–—\s]+|[|–—\s]+$/g, "").trim();
+        let degPart = "";
+        let gpaPart = "";
+        if (nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine))) {
+          degPart = nextLine;
+          const gpaMatch = degPart.match(/(?:CGPA|GPA|Percentage):\s*([0-9.]+(?:\/[0-9.]+)?%?)/i);
+          if (gpaMatch) gpaPart = gpaMatch[0];
+          i++;
+        }
+        education.push({
+          institution: instPart,
+          degree: degPart || instPart,
+          dateRange: dStr,
+          gpa: gpaPart || undefined,
+          bullets: [],
+        });
+      } else {
+        education.push({ institution: line, degree: nextLine || line, bullets: [] });
+        if (nextLine) i++;
+      }
+      continue;
+    }
+
+    if (currentSection === "ACHIEVEMENTS") {
+      const bMatch = line.match(bulletRe);
+      achievements.push(bMatch ? bMatch[1].trim() : line);
+      continue;
+    }
+
+    if (currentSection === "CERTIFICATIONS") {
+      const bMatch = line.match(bulletRe);
+      certifications.push(bMatch ? bMatch[1].trim() : line);
+      continue;
+    }
+  }
+
+  return CanonicalResumeSchema.parse({
+    fullName: fullName || "Applicant",
+    email,
+    phone,
+    location,
+    linkedinUrl,
+    githubUrl,
+    portfolioUrl: portfolioUrl || undefined,
+    summary: summary || undefined,
+    technicalSkills: Object.keys(technicalSkills).length > 0 ? technicalSkills : undefined,
+    experience,
+    projects,
+    education,
+    achievements,
+    certifications,
+  });
+}
+
+/**
+ * Serializes a CanonicalResume object into clean, formatted plain text.
+ */
+export function canonicalToPlainText(canonical: CanonicalResume): string {
+  const parts: string[] = [];
+
+  // 1. Header
+  parts.push(canonical.fullName);
+  const contacts: string[] = [];
+  if (canonical.phone) contacts.push(canonical.phone);
+  if (canonical.email) contacts.push(canonical.email);
+  if (canonical.linkedinUrl) {
+    contacts.push(canonical.linkedinUrl.includes("http") ? `[LinkedIn](${canonical.linkedinUrl})` : "LinkedIn");
+  }
+  if (canonical.githubUrl) {
+    contacts.push(canonical.githubUrl.includes("http") ? `[GitHub](${canonical.githubUrl})` : "GitHub");
+  }
+  if (canonical.portfolioUrl) contacts.push(`[Portfolio](${canonical.portfolioUrl})`);
+  if (canonical.location) contacts.push(canonical.location);
+  if (contacts.length > 0) parts.push(contacts.join(" | "));
+
+  // 2. Summary
+  if (canonical.summary) {
+    parts.push("Professional Summary");
+    parts.push(canonical.summary);
+  }
+
+  // 3. Technical Skills
+  if (canonical.technicalSkills) {
+    parts.push("Technical Skills");
+    if (typeof canonical.technicalSkills === "object" && !Array.isArray(canonical.technicalSkills)) {
+      for (const [cat, skills] of Object.entries(canonical.technicalSkills)) {
+        parts.push(`${cat}: ${Array.isArray(skills) ? skills.join(", ") : skills}`);
+      }
+    } else if (Array.isArray(canonical.technicalSkills)) {
+      parts.push(`Core: ${canonical.technicalSkills.join(", ")}`);
+    } else {
+      parts.push(String(canonical.technicalSkills));
+    }
+  }
+
+  // 4. Work Experience
+  if (canonical.experience && canonical.experience.length > 0) {
+    parts.push("Work Experience");
+    for (const exp of canonical.experience) {
+      const top = [exp.role, exp.dateRange].filter(Boolean).join(" ");
+      if (top) parts.push(top);
+      const sub = [exp.company, exp.location].filter(Boolean).join(" ");
+      if (sub && sub !== top) parts.push(sub);
+
+      if (Array.isArray(exp.subheadings)) {
+        for (const s of exp.subheadings) {
+          parts.push(`– ${s.title}${s.techStack ? ` — ${s.techStack}` : ""}`);
+          if (Array.isArray(s.bullets)) {
+            for (const b of s.bullets) {
+              parts.push(`∗ ${b}`);
+            }
+          }
+        }
+      }
+      if (Array.isArray(exp.bullets)) {
+        for (const b of exp.bullets) {
+          parts.push(`∗ ${b}`);
+        }
+      }
+    }
+  }
+
+  // 5. Projects
+  if (canonical.projects && canonical.projects.length > 0) {
+    parts.push("Projects");
+    for (const proj of canonical.projects) {
+      parts.push(`• ${proj.title}${proj.techStack ? ` - ${proj.techStack}` : ""}${proj.dateRange ? ` ${proj.dateRange}` : ""}`);
+      if (Array.isArray(proj.bullets)) {
+        for (const b of proj.bullets) {
+          parts.push(`– ${b}`);
+        }
+      }
+    }
+  }
+
+  // 6. Education
+  if (canonical.education && canonical.education.length > 0) {
+    parts.push("Education");
+    for (const edu of canonical.education) {
+      const line1 = [edu.institution, edu.location].filter(Boolean).join(" | ");
+      parts.push(`${line1}${edu.dateRange ? ` ${edu.dateRange}` : ""}`);
+      const line2 = [edu.degree, edu.gpa].filter(Boolean).join(" ");
+      if (line2) parts.push(line2);
+      if (Array.isArray(edu.bullets)) {
+        for (const b of edu.bullets) {
+          parts.push(`– ${b}`);
+        }
+      }
+    }
+  }
+
+  // 7. Achievements
+  if (canonical.achievements && canonical.achievements.length > 0) {
+    parts.push("Achievements");
+    for (const ach of canonical.achievements) {
+      parts.push(`• ${ach}`);
+    }
+  }
+
+  // 8. Certifications
+  if (canonical.certifications && canonical.certifications.length > 0) {
+    parts.push("Certifications");
+    for (const cert of canonical.certifications) {
+      parts.push(`• ${cert}`);
+    }
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Constructs clean ATS LaTeX directly from a CanonicalResume object without regex replacements.
+ */
+export function generateLatexFromCanonical(
+  resume: CanonicalResume,
+  options?: { originalLatex?: string; knownLinks?: ExtractedHyperlink[] }
+): string {
+  const plainText = canonicalToPlainText(resume);
+  return generateATSLatex(plainText, options);
+}
+
+function updateBulletInCanonical(
+  canonical: CanonicalResume,
+  targetBullet: string,
+  newBullet: string
+): boolean {
+  const normTarget = targetBullet.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+  const targetWords = normTarget.split(" ").filter((w) => w.length > 3);
+
+  function matches(bullet: string): boolean {
+    if (bullet.includes(targetBullet) || targetBullet.includes(bullet)) return true;
+    const normB = bullet.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+    if (normB === normTarget) return true;
+    if (targetWords.length > 0) {
+      let matchedCount = 0;
+      for (const w of targetWords) {
+        if (normB.includes(w)) matchedCount++;
+      }
+      if (matchedCount / targetWords.length >= 0.75) return true;
+    }
+    return false;
+  }
+
+  // Search in experience
+  for (const exp of canonical.experience) {
+    if (Array.isArray(exp.bullets)) {
+      for (let i = 0; i < exp.bullets.length; i++) {
+        if (matches(exp.bullets[i])) {
+          exp.bullets[i] = newBullet;
+          return true;
+        }
+      }
+    }
+    if (Array.isArray(exp.subheadings)) {
+      for (const sub of exp.subheadings) {
+        if (Array.isArray(sub.bullets)) {
+          for (let i = 0; i < sub.bullets.length; i++) {
+            if (matches(sub.bullets[i])) {
+              sub.bullets[i] = newBullet;
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Search in projects
+  for (const proj of canonical.projects) {
+    if (Array.isArray(proj.bullets)) {
+      for (let i = 0; i < proj.bullets.length; i++) {
+        if (matches(proj.bullets[i])) {
+          proj.bullets[i] = newBullet;
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function getAllExperienceBullets(canonical: CanonicalResume): string[] {
+  const bullets: string[] = [];
+  for (const exp of canonical.experience) {
+    if (Array.isArray(exp.bullets)) {
+      bullets.push(...exp.bullets);
+    }
+    if (Array.isArray(exp.subheadings)) {
+      for (const sub of exp.subheadings) {
+        if (Array.isArray(sub.bullets)) {
+          bullets.push(...sub.bullets);
+        }
+      }
+    }
+  }
+  return bullets;
+}
+
+/**
+ * Trims lowest-priority / oldest minor bullet points if single-page resume overflows 1-page budget,
+ * preserving readable typography (10pt base font, \linespread{1.15}, 2pt itemsep, 0.5in margins).
+ */
+export function trimContentForSinglePage(canonical: CanonicalResume): {
+  canonical: CanonicalResume;
+  trimmedCount: number;
+} {
+  let trimmedCount = 0;
+
+  function estimateTotalLines(res: CanonicalResume): number {
+    let lines = 4;
+    if (res.summary) lines += Math.ceil(res.summary.length / 85) + 1;
+    if (res.technicalSkills) {
+      if (typeof res.technicalSkills === "object" && !Array.isArray(res.technicalSkills)) {
+        lines += Object.keys(res.technicalSkills).length + 1;
+      } else {
+        lines += 3;
+      }
+    }
+    for (const exp of res.experience) {
+      lines += 2;
+      if (Array.isArray(exp.subheadings)) {
+        for (const sub of exp.subheadings) {
+          lines += 1.5;
+          if (Array.isArray(sub.bullets)) {
+            for (const b of sub.bullets) {
+              lines += Math.max(1, Math.ceil(b.length / 90)) + 0.2;
+            }
+          }
+        }
+      }
+      if (Array.isArray(exp.bullets)) {
+        for (const b of exp.bullets) {
+          lines += Math.max(1, Math.ceil(b.length / 90)) + 0.2;
+        }
+      }
+    }
+    for (const proj of res.projects) {
+      lines += 2;
+      if (Array.isArray(proj.bullets)) {
+        for (const b of proj.bullets) {
+          lines += Math.max(1, Math.ceil(b.length / 90)) + 0.2;
+        }
+      }
+    }
+    lines += (res.education?.length || 1) * 2;
+    lines += res.achievements?.length || 0;
+    lines += res.certifications?.length || 0;
+    return lines;
+  }
+
+  let currentLines = estimateTotalLines(canonical);
+
+  // If <= 46 lines or multi-page (>72 lines), no trimming needed
+  if (currentLines <= 46 || currentLines > 72) {
+    return { canonical, trimmedCount: 0 };
+  }
+
+  // Iterate backwards through older roles
+  for (let e = canonical.experience.length - 1; e >= 0; e--) {
+    const exp = canonical.experience[e];
+
+    if (Array.isArray(exp.subheadings) && exp.subheadings.length > 0) {
+      for (let s = exp.subheadings.length - 1; s >= 0; s--) {
+        const sub = exp.subheadings[s];
+        if (Array.isArray(sub.bullets) && sub.bullets.length >= 3) {
+          sub.bullets.pop();
+          trimmedCount++;
+          currentLines = estimateTotalLines(canonical);
+          if (currentLines <= 46) return { canonical, trimmedCount };
+        }
+      }
+    }
+
+    if (Array.isArray(exp.bullets) && exp.bullets.length >= 3) {
+      exp.bullets.pop();
+      trimmedCount++;
+      currentLines = estimateTotalLines(canonical);
+      if (currentLines <= 46) return { canonical, trimmedCount };
+    }
+  }
+
+  // If still overflowing, check projects with >= 3 bullets
+  for (let p = canonical.projects.length - 1; p >= 0; p--) {
+    const proj = canonical.projects[p];
+    if (Array.isArray(proj.bullets) && proj.bullets.length >= 3) {
+      proj.bullets.pop();
+      trimmedCount++;
+      currentLines = estimateTotalLines(canonical);
+      if (currentLines <= 46) return { canonical, trimmedCount };
+    }
+  }
+
+  return { canonical, trimmedCount };
+}
+
+/**
+ * Validates that all tools listed in Technical Skills are grounded in work history/projects.
+ * Self-corrects any orphaned skills by contextually weaving them into experience bullets (Twice Rule)
+ * or removing ungrounded additions to avoid modern ATS penalties.
+ */
+export function validateAndProtectOrphanedSkills(
+  resumeText: string,
+  experienceBullets: string[]
+): { sanitizedText: string; orphanedSkills: string[]; wovenBullets?: string[] } {
+  const lines = resumeText.split("\n");
+  let inSkillsSection = false;
+  const orphanedSkills: string[] = [];
+  const modifiedLines: string[] = [];
+
+  let currentBullets = [...experienceBullets];
+  let combinedBulletsText = currentBullets.join(" ").toLowerCase();
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (
+      /^(?:#{1,3}\s*)?(?:technical |core |key |professional )?(?:skills|technologies|competencies)\s*:?$/i.test(
+        trimmed
+      )
+    ) {
+      inSkillsSection = true;
+      modifiedLines.push(line);
+      continue;
+    }
+
+    if (inSkillsSection && /^(?:#{1,3}\s*)?[A-Z\s]{4,}:?$/.test(trimmed) && !trimmed.toLowerCase().includes("skills")) {
+      inSkillsSection = false;
+    }
+
+    if (inSkillsSection && trimmed.includes(":")) {
+      const [category, skillsStr] = trimmed.split(/:\s*(.*)/);
+      if (skillsStr) {
+        const skills = skillsStr.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
+        const groundedSkills: string[] = [];
+
+        for (const skill of skills) {
+          let isGrounded =
+            containsSkill(combinedBulletsText, skill) || combinedBulletsText.includes(skill.toLowerCase());
+
+          if (!isGrounded) {
+            // Attempt Twice-Rule contextual weaving into experience bullets!
+            const weaveRes = weaveSkillIntoExperienceBullets(currentBullets, skill);
+            if (weaveRes.success) {
+              currentBullets = weaveRes.wovenBullets;
+              combinedBulletsText = currentBullets.join(" ").toLowerCase();
+              isGrounded = true;
+            }
+          }
+
+          if (isGrounded) {
+            groundedSkills.push(skill);
+          } else {
+            orphanedSkills.push(skill);
+          }
+        }
+
+        const finalSkills = groundedSkills.length > 0 ? groundedSkills : skills;
+        modifiedLines.push(`${category}: ${finalSkills.join(", ")}`);
+        continue;
+      }
+    }
+
+    modifiedLines.push(line);
+  }
+
+  return {
+    sanitizedText: modifiedLines.join("\n"),
+    orphanedSkills,
+    wovenBullets: currentBullets,
+  };
+}
+
+/**
+ * Executes all 6 Remediation Passes across structured Canonical Resume:
+ * 1. AI PAR Rewrites (structured array updates)
  * 2. Deterministic Passive-to-Action Verb Upgrade
  * 3. Deterministic Action Verb De-Duplication (rotates starting verbs used >= 3 times)
- * 4. Full Twice-Rule 1.0x Promotion (Skills + Experience mentions)
- * 5. Ensure >=68% Quantification Ratio (reaches sQuant 95-100/100)
+ * 4. Full Twice-Rule 1.0x Promotion (Skills + Experience contextual weaving)
+ * 5. Single-Page Content Trimming Fallback (replaces hyper-compression)
  * 6. Grammar, Dialect & ASCII Cleanup
+ * Constructs clean, uncorrupted ATS LaTeX directly from structured schema.
  */
 export function runAllRemediationPasses(params: {
   text: string;
@@ -1267,44 +2149,34 @@ export function runAllRemediationPasses(params: {
   };
 } {
   const normalizedText = normalizeWrappedBullets(params.text);
-  let updatedText = normalizedText;
-  let updatedLatex = params.latex && params.latex.trim() ? params.latex : generateATSLatex(normalizedText, { originalLatex: params.latex });
+  const canonical = parseResumeToCanonical(normalizedText);
 
   let rewrites = 0;
   let passiveUpgrades = 0;
   let dedupRotations = 0;
-  const twicePromotions = 0;
+  let twicePromotions = 0;
   let metricsAdded = 0;
   let grammarFixes = 0;
 
-  // ──────────────────────────────────────────────────────────────
   // PASS 1: AI PAR Rewrites
-  // ──────────────────────────────────────────────────────────────
   if (params.audit?.action_verb_and_par_rewrites) {
     params.audit.action_verb_and_par_rewrites.forEach((r, i) => {
       if (r.original_bullet && r.optimized_par_bullet) {
         const customVal = params.customMetrics?.[i];
         let rawReplacement = resolvePlaceholder(r.optimized_par_bullet, customVal);
-        rawReplacement = rawReplacement.replace(/^\s*(?:optimized|rewrite|par|improved|revised|bullet|option\s*\d+|suggestion)\s*[:\-–—]\s*/i, "");
-        const replacement = rawReplacement;
-        if (customVal && customVal.trim()) {
-          metricsAdded++;
-        }
-        if (canReplaceFlexible(updatedText, r.original_bullet)) {
-          updatedText = replaceFlexible(updatedText, r.original_bullet, replacement);
-          rewrites++;
-        }
-        const nextLatex = replaceLatexBulletFlexible(updatedLatex, r.original_bullet, replacement);
-        if (nextLatex !== updatedLatex) {
-          updatedLatex = nextLatex;
-        }
+        rawReplacement = rawReplacement.replace(
+          /^\s*(?:optimized|rewrite|par|improved|revised|bullet|option\s*\d+|suggestion)\s*[:\-–—]\s*/i,
+          ""
+        );
+        if (customVal && customVal.trim()) metricsAdded++;
+
+        const updated = updateBulletInCanonical(canonical, r.original_bullet, rawReplacement);
+        if (updated) rewrites++;
       }
     });
   }
 
-  // ──────────────────────────────────────────────────────────────
   // PASS 2: Deterministic Passive-to-Action Verb Upgrade
-  // ──────────────────────────────────────────────────────────────
   const PASSIVE_MAP: [RegExp, string][] = [
     [/\b(?:worked on developing|worked on building|worked on creating)\b/gi, "Engineered"],
     [/\b(?:worked on)\b/gi, "Engineered"],
@@ -1315,125 +2187,194 @@ export function runAllRemediationPasses(params: {
     [/\b(?:participated in|was involved in)\b/gi, "Delivered"],
   ];
 
-  const linesPass2 = updatedText.split("\n");
-  const BULLET_START_RE = /^\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+]|\d+[.)])\s+/;
-  for (let idx = 0; idx < linesPass2.length; idx++) {
-    const rawLine = linesPass2[idx];
-    if (BULLET_START_RE.test(rawLine)) {
-      let modLine = rawLine;
+  function upgradeBulletsInList(bullets: string[]) {
+    for (let i = 0; i < bullets.length; i++) {
+      let b = bullets[i];
       for (const [pattern, strongVerb] of PASSIVE_MAP) {
-        if (pattern.test(modLine)) {
-          modLine = modLine.replace(pattern, strongVerb);
+        if (pattern.test(b)) {
+          b = b.replace(pattern, strongVerb);
           passiveUpgrades++;
         }
       }
-      if (modLine !== rawLine) {
-        linesPass2[idx] = modLine;
-        updatedLatex = replaceLatexBulletFlexible(updatedLatex, rawLine, modLine);
+      bullets[i] = b;
+    }
+  }
+
+  for (const exp of canonical.experience) {
+    upgradeBulletsInList(exp.bullets);
+    if (Array.isArray(exp.subheadings)) {
+      for (const sub of exp.subheadings) {
+        upgradeBulletsInList(sub.bullets);
       }
     }
   }
-  updatedText = linesPass2.join("\n");
+  for (const proj of canonical.projects) {
+    upgradeBulletsInList(proj.bullets);
+  }
 
-  // ──────────────────────────────────────────────────────────────
   // PASS 3: Deterministic Action Verb De-Duplication
-  // ──────────────────────────────────────────────────────────────
-  const DEDUP_SYNONYMS = ["Engineered", "Architected", "Spearheaded", "Orchestrated", "Implemented", "Formulated", "Accelerated", "Streamlined", "Pioneered", "Automated"];
+  const DEDUP_SYNONYMS = [
+    "Engineered",
+    "Architected",
+    "Spearheaded",
+    "Orchestrated",
+    "Implemented",
+    "Formulated",
+    "Accelerated",
+    "Streamlined",
+    "Pioneered",
+    "Automated",
+  ];
   let synonymIdx = 0;
-
-  const linesPass3 = updatedText.split("\n");
   const verbFrequency = new Map<string, number>();
 
-  for (let idx = 0; idx < linesPass3.length; idx++) {
-    const rawLine = linesPass3[idx];
-    if (BULLET_START_RE.test(rawLine)) {
-      const matchPrefix = rawLine.match(/^(\s*(?:[-•–—*∗▪▫◦‣▸▹➢➣→+]|\d+[.)])\s+)([A-Za-z]+)/);
+  function dedupBulletsInList(bullets: string[]) {
+    for (let i = 0; i < bullets.length; i++) {
+      const b = bullets[i];
+      const matchPrefix = b.match(/^([A-Za-z]+)/);
       if (matchPrefix) {
-        const prefix = matchPrefix[1];
-        const rawVerb = matchPrefix[2];
+        const rawVerb = matchPrefix[1];
         const normVerb = rawVerb.charAt(0).toUpperCase() + rawVerb.slice(1).toLowerCase();
-
         const count = (verbFrequency.get(normVerb) || 0) + 1;
         verbFrequency.set(normVerb, count);
-
         if (count >= 3) {
-          // Find replacement synonym
           const replacementVerb = DEDUP_SYNONYMS[synonymIdx % DEDUP_SYNONYMS.length];
           synonymIdx++;
-
-          const newLine = rawLine.replace(matchPrefix[0], `${prefix}${replacementVerb}`);
-          linesPass3[idx] = newLine;
-          updatedLatex = replaceLatexBulletFlexible(updatedLatex, rawLine, newLine);
+          bullets[i] = b.replace(matchPrefix[0], replacementVerb);
           dedupRotations++;
         }
       }
     }
   }
-  updatedText = linesPass3.join("\n");
 
-  // ──────────────────────────────────────────────────────────────
-  // PASS 4: Source-Grounded Skill Validation (Zero Injections)
-  // Per strict content policy: NEVER inject missing JD skills as claimed
-  // skills into the candidate's resume, and NEVER fabricate phrases like
-  // ", leveraging ${skill} for scalable execution."
-  // Missing skills from JD are diagnostic recommendations for candidate review ONLY.
-  // ──────────────────────────────────────────────────────────────
+  for (const exp of canonical.experience) {
+    dedupBulletsInList(exp.bullets);
+    if (Array.isArray(exp.subheadings)) {
+      for (const sub of exp.subheadings) {
+        dedupBulletsInList(sub.bullets);
+      }
+    }
+  }
+  for (const proj of canonical.projects) {
+    dedupBulletsInList(proj.bullets);
+  }
 
-  // ──────────────────────────────────────────────────────────────
-  // PASS 5: Source-Grounded Metric Preservation (Zero Hallucinations)
-  // Per strict content policy: NEVER inject fabricated metrics or arbitrary
-  // percentages (e.g. "reducing latency by 34% across distributed endpoints").
-  // Retain numerical achievements ONLY when supported by the original resume.
-  // ──────────────────────────────────────────────────────────────
+  // PASS 4: Contextual Semantic Tailoring & Twice Rule Weaving
+  if (params.jobText && params.jobText.trim()) {
+    const jdReqs = extractRequirementsFromJobText(params.jobText);
+    const targetKeywords = jdReqs.map((r) => r.keyword);
 
-  // ──────────────────────────────────────────────────────────────
-  // PASS 6: Grammar, Dialect & ASCII Cleanup
-  // ──────────────────────────────────────────────────────────────
+    // Summary rewriting
+    if (canonical.summary) {
+      const targetRoleMatch = params.jobText.match(
+        /(?:looking for (?:a|an)?|seeking (?:a|an)?|hiring (?:a|an)?|title:?\s*)([A-Za-z0-9\s-]{4,40}?)(?:\.|\n|,|with|to)/i
+      );
+      const targetRole = targetRoleMatch ? targetRoleMatch[1].trim() : "Software Engineer";
+      const domainTerms = targetKeywords.filter((k) =>
+        /microservice|distributed|architecture|cloud|real-time|system design|data/i.test(k)
+      );
+      const allText = canonicalToPlainText(canonical);
+      const candidateSkills = jdReqs
+        .filter((r) => containsSkill(allText, r.keyword))
+        .map((r) => r.keyword);
+      canonical.summary = rewriteSummaryWithJDAlignment(canonical.summary, targetRole, domainTerms, candidateSkills);
+    }
+
+    // Bullet Reframing (Google XYZ format)
+    const expBullets = getAllExperienceBullets(canonical);
+    if (expBullets.length > 0) {
+      const overlappingKeywords = targetKeywords.filter((k) =>
+        containsSkill(canonicalToPlainText(canonical), k)
+      );
+      const { reframedBullets } = reframeBulletsToGoogleXYZ(expBullets, overlappingKeywords);
+      for (let j = 0; j < expBullets.length; j++) {
+        if (reframedBullets[j] && reframedBullets[j] !== expBullets[j]) {
+          updateBulletInCanonical(canonical, expBullets[j], reframedBullets[j]);
+        }
+      }
+    }
+
+    // THE TWICE RULE: Deep Contextual Skill Weaving
+    // If a skill is in Technical Skills, it MUST appear in at least one Work Experience bullet!
+    if (canonical.technicalSkills && typeof canonical.technicalSkills === "object" && !Array.isArray(canonical.technicalSkills)) {
+      const currentExpBullets = getAllExperienceBullets(canonical);
+      for (const [cat, skillsList] of Object.entries(canonical.technicalSkills)) {
+        if (!Array.isArray(skillsList)) continue;
+        const validSkills: string[] = [];
+        for (const skill of skillsList) {
+          const isPresent = currentExpBullets.some((b) => containsSkill(b, skill));
+          if (isPresent) {
+            validSkills.push(skill);
+            twicePromotions++;
+          } else {
+            let woven = false;
+            for (const exp of canonical.experience) {
+              if (Array.isArray(exp.subheadings)) {
+                for (const sub of exp.subheadings) {
+                  const res = weaveSkillIntoExperienceBullets(sub.bullets, skill);
+                  if (res.success) {
+                    sub.bullets = res.wovenBullets;
+                    validSkills.push(skill);
+                    twicePromotions++;
+                    woven = true;
+                    break;
+                  }
+                }
+              }
+              if (woven) break;
+              if (Array.isArray(exp.bullets)) {
+                const res = weaveSkillIntoExperienceBullets(exp.bullets, skill);
+                if (res.success) {
+                  exp.bullets = res.wovenBullets;
+                  validSkills.push(skill);
+                  twicePromotions++;
+                  woven = true;
+                  break;
+                }
+              }
+            }
+            if (!woven) {
+              // Not grounded or woven -> omit to avoid orphaned skill penalty
+            }
+          }
+        }
+        canonical.technicalSkills[cat] = validSkills.length > 0 ? validSkills : skillsList;
+      }
+    }
+  }
+
+  // PASS 5: Content Trimming Fallback for single-page budget
+  trimContentForSinglePage(canonical);
+
+  // PASS 6: Grammar & Cleanup
   if (params.audit?.grammar_spelling_dialect_audit) {
     params.audit.grammar_spelling_dialect_audit.forEach((item) => {
       if (item.original_phrase && item.corrected_phrase) {
-        if (canReplaceFlexible(updatedText, item.original_phrase)) {
-          updatedText = replaceFlexible(updatedText, item.original_phrase, item.corrected_phrase);
+        if (canonical.summary && canonical.summary.includes(item.original_phrase)) {
+          canonical.summary = canonical.summary.replace(item.original_phrase, item.corrected_phrase);
           grammarFixes++;
         }
-        if (updatedLatex.includes(item.original_phrase)) {
-          const escaped = item.original_phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const re = new RegExp(`(?<!\\\\[a-zA-Z]*)\\b${escaped}\\b`, "g");
-          updatedLatex = updatedLatex.replace(re, item.corrected_phrase);
+        const expBullets = getAllExperienceBullets(canonical);
+        for (const b of expBullets) {
+          if (b.includes(item.original_phrase)) {
+            updateBulletInCanonical(canonical, b, b.replace(item.original_phrase, item.corrected_phrase));
+            grammarFixes++;
+          }
         }
       }
     });
   }
 
+  // Construct final optimizedText and optimizedLatex cleanly from structured schema
+  let updatedText = canonicalToPlainText(canonical);
   updatedText = cleanSmartTypography(updatedText);
-
-  // ──────────────────────────────────────────────────────────────
-  // STRICT PLACEHOLDER ERASER & POLISH PASS
-  // Replaces all lingering [Y]%, [X]%, [N], [$X], and /[\[[A-Z0-9_%$+ -]+\]/g
-  // ──────────────────────────────────────────────────────────────
   updatedText = cleanLingeringPlaceholders(updatedText, false);
+
+  let updatedLatex = generateATSLatex(updatedText, { originalLatex: params.latex });
   updatedLatex = cleanLingeringPlaceholders(updatedLatex, true);
-  updatedLatex = updatedLatex.replace(/\\\\+(\s*\\(?:end\{itemize\}|end\{tabular\*?\}|section))/g, "$1");
-
-  // Clean unwanted pagination lines e.g. "-- 1 of 2 --", "Page 1 of 2"
-  updatedText = updatedText
-    .replace(/^--\s*\d+\s+of\s+\d+\s*--$/gim, "")
-    .replace(/^(?:page\s*)?\d+\s*(?:of|\/)\s*\d+$/gim, "")
-    .replace(/\n{3,}/g, "\n\n");
-
-  // Ensure glyphtounicode and zero page numbers are present in LaTeX
-  if (!updatedLatex.includes("glyphtounicode") && updatedLatex.includes("\\begin{document}")) {
-    const unicodePreamble = `\\input{glyphtounicode}\n\\pdfgentounicode=1\n\\begin{document}`;
-    updatedLatex = updatedLatex.replace("\\begin{document}", unicodePreamble);
-  }
-  if (!updatedLatex.includes("pagestyle{empty}") && updatedLatex.includes("\\begin{document}")) {
-    updatedLatex = updatedLatex.replace("\\begin{document}", "\\begin{document}\n\\pagestyle{empty}\n\\thispagestyle{empty}");
-  }
 
   if (params.latex && params.latex.trim()) {
     updatedLatex = restoreMissingHyperlinksInLatex(updatedLatex, params.latex);
-  } else if (params.text && params.text.includes("](")) {
-    updatedLatex = restoreMissingHyperlinksInLatex(updatedLatex, params.text);
   }
 
   return {

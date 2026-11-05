@@ -1,4 +1,176 @@
+import { z } from "zod";
 import { parseBalancedBraces } from "./latex-text";
+
+export const SubheadingItemSchema = z.object({
+  title: z.string().trim().default(""),
+  subtitle: z.string().trim().optional(),
+  techStack: z.string().trim().optional(),
+  bullets: z.array(z.string()).default([]),
+});
+
+export type SubheadingItem = z.infer<typeof SubheadingItemSchema>;
+
+export const ExperienceItemSchema = z.object({
+  company: z.string().trim().default(""),
+  role: z.string().trim().default(""),
+  location: z.string().trim().optional(),
+  dateRange: z.string().trim().optional(),
+  bullets: z.array(z.string()).default([]),
+  subheadings: z.array(SubheadingItemSchema).default([]),
+});
+
+export type ExperienceItem = z.infer<typeof ExperienceItemSchema>;
+
+export const ProjectItemSchema = z.object({
+  title: z.string().trim().default(""),
+  subtitle: z.string().trim().optional(),
+  techStack: z.string().trim().optional(),
+  dateRange: z.string().trim().optional(),
+  bullets: z.array(z.string()).default([]),
+});
+
+export type ProjectItem = z.infer<typeof ProjectItemSchema>;
+
+export const EducationItemSchema = z.object({
+  institution: z.string().trim().default(""),
+  degree: z.string().trim().default(""),
+  location: z.string().trim().optional(),
+  dateRange: z.string().trim().optional(),
+  gpa: z.string().trim().optional(),
+  bullets: z.array(z.string()).default([]),
+});
+
+export type EducationItem = z.infer<typeof EducationItemSchema>;
+
+export const CanonicalResumeSchema = z.object({
+  fullName: z.string().trim().default(""),
+  email: z.string().trim().email().optional().or(z.literal("")).catch(""),
+  phone: z.string().trim().default(""),
+  location: z.string().trim().default(""),
+  linkedinUrl: z
+    .string()
+    .trim()
+    .url()
+    .catch(() => process.env.DEFAULT_LINKEDIN_URL || "https://linkedin.com/in/applicant")
+    .default(() => process.env.DEFAULT_LINKEDIN_URL || "https://linkedin.com/in/applicant"),
+  githubUrl: z
+    .string()
+    .trim()
+    .url()
+    .catch(() => process.env.DEFAULT_GITHUB_URL || "https://github.com/applicant")
+    .default(() => process.env.DEFAULT_GITHUB_URL || "https://github.com/applicant"),
+  portfolioUrl: z.string().trim().optional(),
+  summary: z.string().trim().optional(),
+  technicalSkills: z
+    .union([z.record(z.string(), z.array(z.string())), z.array(z.string()), z.string()])
+    .optional(),
+  experience: z.array(z.union([ExperienceItemSchema, z.record(z.string(), z.any()), z.any()])).default([]),
+  projects: z.array(z.union([ProjectItemSchema, z.record(z.string(), z.any()), z.any()])).default([]),
+  education: z.array(z.union([EducationItemSchema, z.record(z.string(), z.any()), z.any()])).default([]),
+  achievements: z.array(z.string()).default([]),
+  certifications: z.array(z.string()).default([]),
+});
+
+export type CanonicalResume = z.infer<typeof CanonicalResumeSchema>;
+
+export function createCanonicalResume(raw?: unknown): CanonicalResume {
+  const defaultLinkedIn = process.env.DEFAULT_LINKEDIN_URL || "https://linkedin.com/in/applicant";
+  const defaultGitHub = process.env.DEFAULT_GITHUB_URL || "https://github.com/applicant";
+
+  if (!raw || typeof raw !== "object") {
+    return CanonicalResumeSchema.parse({
+      linkedinUrl: defaultLinkedIn,
+      githubUrl: defaultGitHub,
+    });
+  }
+
+  const r = raw as Record<string, unknown>;
+  return CanonicalResumeSchema.parse({
+    ...r,
+    linkedinUrl: r.linkedinUrl || defaultLinkedIn,
+    githubUrl: r.githubUrl || defaultGitHub,
+  });
+}
+
+/**
+ * Post-OCR regex and deterministic sanitization pass to fix common token errors:
+ * - \bAl\b -> AI
+ * - Vertz -> Vertx
+ * - Dangling metrics (lone %, empty bracket placeholders)
+ * - Duplicate text blocks (e.g. repeated education lines, identical consecutive sentences)
+ */
+export function sanitizeOcrText(text: string): string {
+  if (!text) return "";
+
+  let cleaned = text;
+
+  // 1. Common OCR token error fixes
+  cleaned = cleaned.replace(/\bAl\b/g, "AI");
+  cleaned = cleaned.replace(/\bGenAl\b/g, "GenAI");
+  cleaned = cleaned.replace(/\bAl-powered\b/gi, "AI-Powered");
+  cleaned = cleaned.replace(/\bAl\/ML\b/gi, "AI/ML");
+  cleaned = cleaned.replace(/\bVertz\b/gi, "Vertx");
+
+  // 2. Dangling metrics cleanup
+  cleaned = cleaned.replace(
+    /\b(reduced|reducing|decreased|decreasing|cut|cutting|saved|saving|increased|increasing|improved|improving|boosted|boosting|accelerated|accelerating|scaled|scaling|grew|growing|achieved|achieving|by)\s+(?:\[[A-Za-z0-9_\$%\s-]*\]\s*)*%(?=[ \t.,;!?\n]|$)/gi,
+    ""
+  );
+  cleaned = cleaned.replace(
+    /\b(saved|saving|costing|budget of)\s+(?:\[[A-Za-z0-9_\$%\s-]*\]\s*)*\$(?=[ \t.,;!?\n]|$)/gi,
+    ""
+  );
+  cleaned = cleaned.replace(/(?<=\s)%(?=\s|[.,;!?\n]|$)/g, "");
+  cleaned = cleaned.replace(/\[\s*(?:X|Y|N|\$X|METRIC)?\s*\]%?/gi, "");
+  cleaned = cleaned.replace(/\(\s*\)/g, "");
+
+  // 3. Deduplicate consecutive duplicate lines & duplicate education blocks
+  const lines = cleaned.split("\n");
+  const dedupedLines: string[] = [];
+  const seenLines = new Set<string>();
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (!trimmed) {
+      if (dedupedLines.length > 0 && dedupedLines[dedupedLines.length - 1] === "") {
+        continue;
+      }
+      dedupedLines.push("");
+      continue;
+    }
+
+    const norm = trimmed
+      .replace(/^[-•–—*∗▪▫◦‣▸▹➢➣→+✔✓◆◇►▸⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF\s]+/, "")
+      .toLowerCase();
+
+    // Check immediate consecutive duplicate
+    if (dedupedLines.length > 0) {
+      const prevNorm = dedupedLines[dedupedLines.length - 1]
+        .trim()
+        .replace(/^[-•–—*∗▪▫◦‣▸▹➢➣→+✔✓◆◇►▸⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF\s]+/, "")
+        .toLowerCase();
+      if (prevNorm && prevNorm === norm) {
+        continue;
+      }
+    }
+
+    // Check repeated education or heading lines (>20 chars)
+    if (
+      norm.length > 20 &&
+      seenLines.has(norm) &&
+      /(?:bachelor|master|degree|university|institute|school|college|technology)/i.test(norm)
+    ) {
+      continue;
+    }
+    seenLines.add(norm);
+
+    dedupedLines.push(rawLine);
+  }
+
+  return dedupedLines.join("\n");
+}
 
 export interface ExtractedHyperlink {
   url: string;
@@ -469,7 +641,7 @@ export function isGenericLinkAnchor(anchor: string): boolean {
  * and converting markdown links [Label](URL) to clickable LaTeX \href.
  */
 export function formatLatexWithHyperlinks(line: string, knownLinks?: ExtractedHyperlink[]): string {
-  let cleanLine = line
+  let cleanLine = sanitizeOcrText(line)
     .replace(/\\?\$[ \t]*\|[ \t]*\\?\$/g, " | ")
     .replace(/^\s*(?:optimized|rewrite|par|improved|revised|bullet|option\s*\d+|suggestion)\s*[:\-–—]\s*/i, "")
     .replace(/\s*\((?:note|instruction|placeholder|tip)\s*:[^)]*\)/gi, "")
@@ -712,6 +884,34 @@ export function ensureAllHrefsPreservedInLatex(
         seenNorm.add(l.normalizedUrl);
         allKnownLinks.push(l);
       }
+    }
+  }
+
+  // Bind default environment configuration if contact links are missing
+  if (process.env.DEFAULT_LINKEDIN_URL && !allKnownLinks.some((l) => l.category === "linkedin")) {
+    const url = process.env.DEFAULT_LINKEDIN_URL.trim();
+    const norm = normalizeUrl(url);
+    if (!seenNorm.has(norm)) {
+      seenNorm.add(norm);
+      allKnownLinks.push({
+        url,
+        text: "LinkedIn",
+        category: "linkedin",
+        normalizedUrl: norm,
+      });
+    }
+  }
+  if (process.env.DEFAULT_GITHUB_URL && !allKnownLinks.some((l) => l.category === "github")) {
+    const url = process.env.DEFAULT_GITHUB_URL.trim();
+    const norm = normalizeUrl(url);
+    if (!seenNorm.has(norm)) {
+      seenNorm.add(norm);
+      allKnownLinks.push({
+        url,
+        text: "GitHub",
+        category: "github",
+        normalizedUrl: norm,
+      });
     }
   }
 
