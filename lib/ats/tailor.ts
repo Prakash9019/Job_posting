@@ -29,6 +29,20 @@ import {
   sanitizeOcrText,
 } from "./hyperlinks";
 
+export type { CanonicalResume };
+
+export const CRITICAL_TWICE_RULE_PROMPT_BLOCK = `CRITICAL "TWICE RULE" & CONTEXTUAL JD ALIGNMENT:
+1. If you add a new skill to the Technical Skills section based on the JD or user input, you MUST weave that exact skill into at least one bullet point within the Work Experience section so the experience context proves the candidate used it.
+2. Example: If adding "Artificial Intelligence" or "Python", modify a relevant bullet to say:
+   "Spearheaded an Artificial Intelligence pipeline in Python combining YOLO and SAHI to extract equipment tags from complex P&ID drawings, increasing accuracy by 38%."
+   instead of leaving the generic baseline text:
+   "Developed a multi-stage pipeline using YOLO and SAHI..."
+3. STRICT CONSTRAINTS:
+   - Weave at most 1–2 target JD skills per bullet (max 3–4 across the entire resume) where they fit the project's technical domain naturally.
+   - Use proper Oxford commas ("using Python, FastAPI, and ZeroMQ") — NEVER chain skills with "and ... and ...".
+   - Keep all company names (Julley Online Private Limited, Vertx), dates, subproject titles, and quantitative metrics (42%, 28%, 35%, 500K+, 99.9%, 38%) 100% intact.
+   - Never prepend a second action verb if the bullet already starts with a past-tense action verb.`;
+
 export function escapeLatex(str: string): string {
   return str
     .replace(/\\/g, "\\textbackslash{}")
@@ -609,6 +623,7 @@ export function cleanLingeringPlaceholders(content: string, isLatex = false): st
     .replace(/\bretained\s+of monthly active users\b/gi, "driving high monthly active user retention")
     .replace(/,\s*and\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\b/gi, ", while $1")
     .replace(/\band\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\s+manual\b/gi, "while $1 manual")
+    .replace(/\bextract\s+equipment\s+and\s+instrument\s+tags\b/gi, "extract equipment tags")
     .replace(/\bResults-driven for\s+(?:an?\s+)?/gi, "Results-driven ")
     .replace(/\$C\+\+\$/g, "C++")
     .replace(/\\\$C\+\+\\\$/g, "C++");
@@ -785,31 +800,23 @@ export function weaveSkillIntoExperienceBullets(
   if (/^artificial intelligence$/i.test(normSkill)) {
     for (let i = 0; i < updatedBullets.length; i++) {
       const b = updatedBullets[i];
-      if (/yolo|sahi|pipeline|ocr|drawing tag|vision/i.test(b)) {
-        if (/multi-stage\s+(?:AI\s+)?pipeline\s+using/i.test(b)) {
-          updatedBullets[i] = b.replace(
-            /^(?:Developed|Engineered|Spearheaded)?\s*(?:a|an)?\s*multi-stage\s+(?:AI\s+)?pipeline\s+using/i,
-            "Spearheaded an Artificial Intelligence pipeline combining"
-          );
-          return { wovenBullets: updatedBullets, success: true };
-        }
+      if (/yolo|sahi|ocr|drawing tag|p&id|tag extraction/i.test(b)) {
         if (/multi-stage\s+(?:AI\s+)?pipeline/i.test(b)) {
-          updatedBullets[i] = b.replace(
-            /^(?:Developed|Engineered|Spearheaded)?\s*(?:a|an)?\s*multi-stage\s+(?:AI\s+)?pipeline/i,
-            "Spearheaded an Artificial Intelligence pipeline combining"
-          );
-          return { wovenBullets: updatedBullets, success: true };
-        }
-        if (/pipeline/i.test(b) && !exactRe.test(b)) {
-          updatedBullets[i] = b.replace(/\bpipeline\b/i, "Artificial Intelligence pipeline");
+          updatedBullets[i] = b
+            .replace(
+              /^(?:Developed|Engineered|Spearheaded|Architected)?\s*(?:a|an)?\s*multi-stage\s+(?:AI\s+)?pipeline\s+(?:using|combining)?/i,
+              "Spearheaded an Artificial Intelligence pipeline in Python combining"
+            )
+            .replace(/extract\s+equipment\s+and\s+instrument\s+tags/i, "extract equipment tags");
           return { wovenBullets: updatedBullets, success: true };
         }
         if (/yolo/i.test(b) && !exactRe.test(b)) {
-          updatedBullets[i] = b.replace(/\b(?:using|with)\s+YOLO/i, "an Artificial Intelligence pipeline combining YOLO");
+          updatedBullets[i] = b.replace(/\b(?:using|with)\s+YOLO/i, "an Artificial Intelligence pipeline in Python combining YOLO");
           return { wovenBullets: updatedBullets, success: true };
         }
       }
     }
+    return { wovenBullets: bullets, success: false };
   }
 
   // 2. Python
@@ -820,18 +827,49 @@ export function weaveSkillIntoExperienceBullets(
         updatedBullets[i] = b.replace(/\b(FastAPI|Flask|Django)\b/i, "Python, $1");
         return { wovenBullets: updatedBullets, success: true };
       }
-    }
-  }
-
-  // 3. Docker / Kubernetes
-  if (/^docker$/i.test(normSkill) || /^kubernetes$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/integration hub|microservices|distributed/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\b(integration hub|microservices)\b/i, `$1 containerized with ${normSkill}`);
+      if (/pipeline\s+combining\s+YOLO/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bpipeline\s+combining\b/i, "pipeline in Python combining");
         return { wovenBullets: updatedBullets, success: true };
       }
     }
+  }
+
+  // 3. Microservices
+  if (/^microservices?$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/adapter\s+and\s+registry\s+patterns/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(
+          /\badapter\s+and\s+registry\s+patterns\b/i,
+          "microservices and adapter patterns"
+        );
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/centralized\s+integration\s+hub/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(
+          /\bcentralized\s+integration\s+hub\b/i,
+          "microservices integration hub"
+        );
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
+  }
+
+  // 4. Docker / Kubernetes
+  if (/^docker$/i.test(normSkill) || /^kubernetes$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/telemetry\s+pipeline/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\btelemetry\s+pipeline\b/i, `telemetry pipeline containerized with ${normSkill}`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/integration\s+hub/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bintegration\s+hub\b/i, `integration hub containerized with ${normSkill}`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
   }
 
   // 4. Generic contextual weaving: distribute at most 1 skill per bullet with clean commas
@@ -927,9 +965,10 @@ export function parseResumeToCanonical(
       if (emailM) email = emailM[0];
       const phoneM = line.match(/\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}/);
       if (phoneM) phone = phoneM[0];
-      const linkMatch = line.match(/https?:\/\/[^\s|)]+/g);
+      const linkMatch = line.match(/(?:https?:\/\/[^\s|)]+|(?:www\.)?(?:linkedin\.com\/in\/|github\.com\/)[^\s|)]+)/gi);
       if (linkMatch) {
-        for (const url of linkMatch) {
+        for (const rawUrl of linkMatch) {
+          const url = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl.replace(/^\/\//, "")}`;
           if (/linkedin\.com/i.test(url)) linkedinUrl = url;
           else if (/github\.com/i.test(url)) githubUrl = url;
           else if (!portfolioUrl) portfolioUrl = url;
@@ -1418,7 +1457,8 @@ export function cleanAiText(text: string): string {
   // Polish gerund clauses to prevent redundant "and" usage (e.g. ", and reducing manual review time" -> ", while reducing...")
   cleaned = cleaned
     .replace(/,\s*and\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\b/gi, ", while $1")
-    .replace(/\band\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\s+manual\b/gi, "while $1 manual");
+    .replace(/\band\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\s+manual\b/gi, "while $1 manual")
+    .replace(/\bextract\s+equipment\s+and\s+instrument\s+tags\b/gi, "extract equipment tags");
 
   return cleaned.trim();
 }
@@ -1911,6 +1951,67 @@ export function trimContentForSinglePage(canonical: CanonicalResume): {
 }
 
 /**
+ * Contextually adds a new skill to CanonicalResume.technicalSkills under its best category
+ * if not already present, ensuring full Twice Rule compliance when skills are added from a target JD.
+ */
+export function addSkillToTechnicalSkills(canonical: CanonicalResume, skill: string): boolean {
+  if (!skill || !skill.trim()) return false;
+  const cleanSkill = cleanAiText(skill.trim());
+  if (!cleanSkill) return false;
+
+  if (
+    typeof canonical.technicalSkills === "object" &&
+    !Array.isArray(canonical.technicalSkills) &&
+    canonical.technicalSkills !== null
+  ) {
+    const record = canonical.technicalSkills as Record<string, string[] | string>;
+    const lowerSkill = cleanSkill.toLowerCase();
+
+    // Check if already present anywhere in technicalSkills
+    for (const [_, skills] of Object.entries(record)) {
+      if (Array.isArray(skills)) {
+        if (skills.some((s) => s.toLowerCase() === lowerSkill)) return false;
+      } else if (typeof skills === "string") {
+        if (skills.toLowerCase().includes(lowerSkill)) return false;
+      }
+    }
+
+    // Determine target category
+    let targetCat = "";
+    if (/artificial intelligence|machine learning|deep learning|rag|vlm|llm|computer vision|ocr|yolo/i.test(lowerSkill)) {
+      targetCat = Object.keys(record).find((k) => /ai|ml|data/i.test(k)) || "AI/ML";
+    } else if (/python|javascript|typescript|c\+\+|sql|golang|rust|java\b/i.test(lowerSkill)) {
+      targetCat = Object.keys(record).find((k) => /lang/i.test(k)) || "Languages";
+    } else if (/react|next|vue|angular|tailwind|frontend/i.test(lowerSkill)) {
+      targetCat = Object.keys(record).find((k) => /front/i.test(k)) || "Frontend";
+    } else if (/node|express|fastapi|flask|django|backend|api/i.test(lowerSkill)) {
+      targetCat = Object.keys(record).find((k) => /back/i.test(k)) || "Backend";
+    } else if (/docker|kubernetes|microservices|distributed|aws|gcp|cloud|system/i.test(lowerSkill)) {
+      targetCat = Object.keys(record).find((k) => /sys|cloud|infra|devops/i.test(k)) || "Systems";
+    }
+
+    if (!targetCat) {
+      targetCat = Object.keys(record)[0] || "Languages";
+    }
+
+    if (!record[targetCat]) {
+      record[targetCat] = [cleanSkill];
+    } else if (Array.isArray(record[targetCat])) {
+      (record[targetCat] as string[]).push(cleanSkill);
+    } else {
+      record[targetCat] = `${record[targetCat]}, ${cleanSkill}`;
+    }
+    return true;
+  } else if (Array.isArray(canonical.technicalSkills)) {
+    if (!canonical.technicalSkills.some((s) => String(s).toLowerCase() === cleanSkill.toLowerCase())) {
+      canonical.technicalSkills.push(cleanSkill);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Validates that all tools listed in Technical Skills are grounded in work history/projects.
  * Self-corrects any orphaned skills by contextually weaving them into experience bullets (Twice Rule)
  * or removing ungrounded additions to avoid modern ATS penalties.
@@ -1919,11 +2020,36 @@ export function validateAndProtectOrphanedSkills(
   resumeText: string,
   experienceBullets: string[]
 ): { sanitizedText: string; orphanedSkills: string[]; wovenBullets?: string[] } {
-  // Baseline candidate skills in Technical Skills are preserved without polluting bullets.
+  const canonical = parseResumeToCanonical(resumeText);
+  const currentBullets = getAllExperienceBullets(canonical);
+  const orphaned: string[] = [];
+  const updatedBullets = [...experienceBullets];
+
+  // Inspect technical skills to check if any newly added skills are orphaned
+  if (typeof canonical.technicalSkills === "object" && !Array.isArray(canonical.technicalSkills) && canonical.technicalSkills !== null) {
+    const record = canonical.technicalSkills as Record<string, string[] | string>;
+    for (const [_, skills] of Object.entries(record)) {
+      const list = Array.isArray(skills) ? skills : String(skills).split(/,\s*/);
+      for (const sk of list) {
+        const cleanSk = cleanAiText(sk).trim();
+        if (!cleanSk || cleanSk.length < 3) continue;
+        const inExp = currentBullets.some((b) => containsSkill(b, cleanSk));
+        if (!inExp) {
+          orphaned.push(cleanSk);
+          // Auto-weave into bullets to guarantee Twice Rule compliance
+          const res = weaveSkillIntoExperienceBullets(updatedBullets, cleanSk);
+          if (res.success) {
+            updatedBullets.splice(0, updatedBullets.length, ...res.wovenBullets);
+          }
+        }
+      }
+    }
+  }
+
   return {
-    sanitizedText: resumeText,
-    orphanedSkills: [],
-    wovenBullets: experienceBullets,
+    sanitizedText: canonicalToPlainText(canonical),
+    orphanedSkills: orphaned,
+    wovenBullets: updatedBullets,
   };
 }
 
@@ -1946,6 +2072,7 @@ export function runAllRemediationPasses(params: {
 }): {
   optimizedText: string;
   optimizedLatex: string;
+  canonical: CanonicalResume;
   passesSummary: {
     rewrites: number;
     passiveUpgrades: number;
@@ -2105,9 +2232,6 @@ export function runAllRemediationPasses(params: {
     // Enforce the Twice Rule strictly on TARGET JD SKILLS that are relevant and not yet in experience bullets.
     // Baseline candidate skills already present in Technical Skills are preserved as-is without spamming bullets.
     // Limit to max 3 newly woven skills across the entire resume, and at most 1 skill per bullet.
-    let totalNewlyWoven = 0;
-    const maxSkillsToWeave = 3;
-
     const jdSkillsToWeave = targetKeywords.filter((kw) => {
       const lower = kw.toLowerCase().trim();
       if (lower.length < 3 || /^(engineer|software|developer|team|experience|years|work|strong|ability)$/i.test(lower)) {
@@ -2116,12 +2240,24 @@ export function runAllRemediationPasses(params: {
       return true;
     });
 
+    // 1. Add all relevant target JD skills to Technical Skills first
+    for (const skill of jdSkillsToWeave) {
+      addSkillToTechnicalSkills(canonical, skill);
+    }
+
+    // 2. Weave up to 4 target JD skills into experience bullets (max 1 per bullet)
+    let totalNewlyWoven = 0;
+    const maxSkillsToWeave = 4;
+
     for (const skill of jdSkillsToWeave) {
       if (totalNewlyWoven >= maxSkillsToWeave) break;
 
       const currentBullets = getAllExperienceBullets(canonical);
-      const isAlreadyInBullets = currentBullets.some((b) => containsSkill(b, skill));
-      if (isAlreadyInBullets) continue; // Already present in experience!
+      const escaped = [...skill.trim()].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
+      const exactRe = new RegExp("(^|[^a-z0-9+#.])" + escaped + "(?=$|[^a-z0-9+#.])", "i");
+      const isAlreadyInBullets = currentBullets.some((b) => exactRe.test(b));
+
+      if (isAlreadyInBullets) continue; // Already present with exact skill name!
 
       let woven = false;
       for (const exp of canonical.experience) {
@@ -2174,6 +2310,21 @@ export function runAllRemediationPasses(params: {
     });
   }
 
+  // Sanitize all bullets in canonical with cleanAiText to enforce single action verbs,
+  // remove leading bullet markers, and ensure <= 2 'and's across canonical schema
+  for (const exp of canonical.experience) {
+    if (Array.isArray(exp.bullets)) {
+      exp.bullets = exp.bullets.map(cleanAiText);
+    }
+    if (Array.isArray(exp.subheadings)) {
+      for (const sub of exp.subheadings) {
+        if (Array.isArray(sub.bullets)) {
+          sub.bullets = sub.bullets.map(cleanAiText);
+        }
+      }
+    }
+  }
+
   // Construct final optimizedText and optimizedLatex cleanly from structured schema
   let updatedText = canonicalToPlainText(canonical);
   updatedText = cleanSmartTypography(updatedText);
@@ -2189,6 +2340,7 @@ export function runAllRemediationPasses(params: {
   return {
     optimizedText: updatedText,
     optimizedLatex: updatedLatex,
+    canonical,
     passesSummary: {
       rewrites,
       passiveUpgrades,
@@ -2216,6 +2368,7 @@ export async function autoTailorResumeToJD(params: {
   baselineScore: number;
   finalScore: number;
   attachmentFilename: string;
+  canonical: CanonicalResume;
 }> {
   const reqs = extractRequirementsFromJobText(params.jobText);
   const baselineScoring = scoreResume(params.resumeText, reqs, params.jobText);
@@ -2232,7 +2385,7 @@ export async function autoTailorResumeToJD(params: {
     }
   }
 
-  const { optimizedText, optimizedLatex } = runAllRemediationPasses({
+  const passes = runAllRemediationPasses({
     text: params.resumeText,
     latex: params.sourceLatex,
     audit,
@@ -2240,22 +2393,23 @@ export async function autoTailorResumeToJD(params: {
   });
 
   const finalLatex = ensureAllHrefsPreservedInLatex(
-    optimizedLatex,
+    passes.optimizedLatex,
     [params.sourceLatex, params.resumeText].filter(Boolean) as string[]
   );
 
-  const finalScoring = scoreResume(optimizedText, reqs, params.jobText);
+  const finalScoring = scoreResume(passes.optimizedText, reqs, params.jobText);
   const attachmentFilename = getCandidateFilename(
     params.resumeText,
     params.companyName || params.jobText
   );
 
   return {
-    optimizedText,
+    optimizedText: passes.optimizedText,
     optimizedLatex: finalLatex,
     baselineScore: baselineScoring.score,
     finalScore: finalScoring.score,
     attachmentFilename,
+    canonical: passes.canonical,
   };
 }
 

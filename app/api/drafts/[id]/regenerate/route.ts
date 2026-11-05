@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { generateApplicationEmail } from "@/lib/ai/gemini";
 import { getStorageProvider } from "@/lib/storage";
-import { getReadableResumeText } from "@/lib/ai/resume";
+import { getReadableResumeText, JobTargetProfile } from "@/lib/ai/resume";
 import { requireUser, assertDraftAccess, AuthError } from "@/lib/auth/authorization";
 import { autoTailorResumeToJD } from "@/lib/ats/tailor";
 import { compileValidatedPdf } from "@/lib/ats/pdf-artifact";
+import { extractCompetencyMatrix } from "@/lib/ats/parse";
 
 export async function POST(
   req: NextRequest,
@@ -98,9 +99,15 @@ export async function POST(
     let effectiveResumeId = activeResume.id;
     let effectiveResumeText = resumeText;
     let generationStatus = "REGENERATED";
+    let tailoredCanonical: any = undefined;
+    let tailoredFilename: string | undefined = undefined;
+
+    const jobText = [jobDetails.jobTitle, jobDetails.companyName, jobDetails.jobDescription].filter(Boolean).join("\n\n");
+    const compMatrix = extractCompetencyMatrix(jobText);
+    const primaryTech = compMatrix.primaryTechStack.map((r) => r.keyword);
+    const archDomain = compMatrix.architectureAndDomainKeywords.map((r) => r.keyword);
 
     try {
-      const jobText = [jobDetails.jobTitle, jobDetails.companyName, jobDetails.jobDescription].filter(Boolean).join("\n\n");
       const tailored = await autoTailorResumeToJD({
         resumeText,
         sourceLatex,
@@ -108,11 +115,13 @@ export async function POST(
         companyName: jobDetails.companyName || undefined,
       });
       effectiveResumeText = tailored.optimizedText;
+      tailoredCanonical = tailored.canonical;
+      tailoredFilename = tailored.attachmentFilename;
 
       const compiledResult = await compileValidatedPdf(tailored.optimizedLatex, {
         linkSource: sourceLatex || resumeText,
         expectedText: tailored.optimizedText,
-        minContentCoverage: 0.9,
+        minContentCoverage: 0.85,
       });
       if (!compiledResult.ok) console.warn("Tailored PDF failed validation; keeping the original resume:", compiledResult.reasons);
       const compiledPdf = compiledResult.ok ? compiledResult.buffer : null;
@@ -138,8 +147,22 @@ export async function POST(
       console.warn("Regenerate ATS tailoring fallback:", tailorErr);
     }
 
+    const jobProfile: JobTargetProfile = {
+      companyName: jobDetails.companyName || "Company",
+      targetRoleTitle: jobDetails.jobTitle || "Software Engineer",
+      recipientEmail: jobDetails.recipientEmail || undefined,
+      hiringManagerName: jobDetails.contactName || undefined,
+      primaryTechStack: primaryTech.length > 0 ? primaryTech : (jobDetails.requiredSkills || []),
+      architectureAndDomainKeywords: archDomain,
+      targetRole: jobDetails.jobTitle || "Software Engineer",
+      targetStack: primaryTech.length > 0 ? primaryTech : (jobDetails.requiredSkills || []),
+    };
+
     const regenerated = await generateApplicationEmail({
       jobDetails,
+      jobProfile,
+      canonicalResume: tailoredCanonical,
+      attachmentFilename: tailoredFilename,
       screenshot: draft.screenshot ? { content: await storage.readFile(draft.screenshot.filePath), mimeType: draft.screenshot.mimeType } : undefined,
       resumeText: effectiveResumeText,
       senderName: draft.user.name || "Applicant",

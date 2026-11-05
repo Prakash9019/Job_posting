@@ -140,9 +140,17 @@ Your task is to audit the provided [RESUME_TEXT] (and optional [JOB_DESCRIPTION_
      * Full Credit (1.0x): Skill appears in BOTH the Skills section AND a Work Experience / Projects bullet point (twice_rule_satisfied_skills).
      * Partial Credit (0.4x): Skill appears ONLY in the Skills list (twice_rule_missing_experience_mention).
      * Missing (0.0x): Skill is absent from the resume (hard_skills_missing). NOTE: These are diagnostic suggestions for the candidate's roadmap ONLY and MUST NEVER be automatically inserted or claimed in the candidate's resume.
-   - STRICT TWICE RULE SKILL WEAVING:
-     * If you add a new skill to the Technical Skills section based on the JD or user input, you MUST weave that exact skill into at least one bullet point within the Work Experience section.
-     * Example: If adding "Artificial Intelligence", modify a bullet to say: "Spearheaded an Artificial Intelligence pipeline combining YOLO and SAHI..." instead of just saying "Spearheaded a multi-stage pipeline...".
+   - CRITICAL "TWICE RULE" & CONTEXTUAL JD ALIGNMENT:
+     1. If you add a new skill to the Technical Skills section based on the JD or user input, you MUST weave that exact skill into at least one bullet point within the Work Experience section so the experience context proves the candidate used it.
+     2. Example: If adding "Artificial Intelligence" or "Python", modify a relevant bullet to say:
+        "Spearheaded an Artificial Intelligence pipeline in Python combining YOLO and SAHI to extract equipment tags from complex P&ID drawings, increasing accuracy by 38%."
+        instead of leaving the generic baseline text:
+        "Developed a multi-stage pipeline using YOLO and SAHI..."
+     3. STRICT CONSTRAINTS:
+        - Weave at most 1–2 target JD skills per bullet (max 3–4 across the entire resume) where they fit the project's technical domain naturally.
+        - Use proper Oxford commas ("using Python, FastAPI, and ZeroMQ") — NEVER chain skills with "and ... and ...".
+        - Keep all company names (Julley Online Private Limited, Vertx), dates, subproject titles, and quantitative metrics (42%, 28%, 35%, 500K+, 99.9%, 38%) 100% intact.
+        - Never prepend a second action verb if the bullet already starts with a past-tense action verb.
 
 3. GOOGLE XYZ / PAR (PROBLEM-ACTION-RESULT) BULLET REWRITES & JD LANGUAGE MIRRORING:
    - Identify the weakest 4-8 bullets (passive voice like "Worked on", "Responsible for", "Helped", or unquantified tasks).
