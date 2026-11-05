@@ -6,7 +6,9 @@ import {
   CATEGORY_LABEL_RE,
   containsSkill,
   METRIC_RE,
+  formatSkillDisplay,
 } from "./scoring";
+import { normalizeJobIdentity } from "./job-identity";
 import { analyzeResume, UnifiedATSAudit } from "./analysis";
 import { parseBalancedBraces } from "./latex-text";
 import {
@@ -657,11 +659,32 @@ export function rewriteSummaryWithJDAlignment(
     role = role.slice(0, -1);
   }
   if (!role || role.length < 3) role = "AI Engineer";
+  // Never let acronyms degrade to "Ai"/"Ml" when the role was title-cased upstream
+  role = role.split(/(\s+)/).map((t) => (t.trim() ? formatSkillDisplay(t) : t)).join("");
+
+  const uniqueFormatted = (list: string[]) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of list) {
+      const f = formatSkillDisplay(String(raw || "").trim());
+      if (f && !seen.has(f.toLowerCase())) {
+        seen.add(f.toLowerCase());
+        out.push(f);
+      }
+    }
+    return out;
+  };
+  const oxford = (items: string[]) =>
+    items.length <= 1
+      ? items.join("")
+      : items.length === 2
+        ? `${items[0]} and ${items[1]}`
+        : `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 
   const domain =
-    domainKeywords.length > 0 ? domainKeywords.slice(0, 2).join(" and ") : "scalable distributed architectures";
-  const tools =
-    overlappingTools.length > 0 ? overlappingTools.slice(0, 3).join(", ") : "modern full-stack technologies";
+    domainKeywords.length > 0 ? oxford(uniqueFormatted(domainKeywords).slice(0, 2)) : "scalable distributed architectures";
+  const toolList = uniqueFormatted(overlappingTools).slice(0, 3);
+  const tools = toolList.length > 0 ? oxford(toolList) : "modern full-stack technologies";
 
   const sentence1 = `Results-driven ${role} specializing in ${domain}.`;
   const sentence2 = `Demonstrated expertise in engineering high-reliability systems and production services utilizing ${tools}.`;
@@ -781,8 +804,10 @@ export function reframeBulletsToGoogleXYZ(
  */
 export function weaveSkillIntoExperienceBullets(
   bullets: string[],
-  skill: string
+  skill: string,
+  options: { primaryOnly?: boolean } = {}
 ): { wovenBullets: string[]; success: boolean } {
+  const primaryOnly = !!options.primaryOnly;
   const normSkill = skill.trim();
   if (!normSkill || bullets.length === 0) return { wovenBullets: bullets, success: false };
 
@@ -860,6 +885,11 @@ export function weaveSkillIntoExperienceBullets(
   if (/^docker$/i.test(normSkill) || /^kubernetes$/i.test(normSkill)) {
     for (let i = 0; i < updatedBullets.length; i++) {
       const b = updatedBullets[i];
+      const existingContainer = b.match(/\bcontainerized with ([A-Za-z0-9.+#-]+)/i);
+      if (existingContainer && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(existingContainer[0], `containerized with ${existingContainer[1]} and ${normSkill}`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
       if (/telemetry\s+pipeline/i.test(b) && !exactRe.test(b)) {
         updatedBullets[i] = b.replace(/\btelemetry\s+pipeline\b/i, `telemetry pipeline containerized with ${normSkill}`);
         return { wovenBullets: updatedBullets, success: true };
@@ -872,7 +902,74 @@ export function weaveSkillIntoExperienceBullets(
     return { wovenBullets: bullets, success: false };
   }
 
+  // 5. Agentic AI: "Engineered 5+ distinct AI workflows" -> "Engineered 5+ distinct Agentic AI workflows"
+  if (/^agentic ai$/i.test(normSkill)) {
+    const aiNoun = /(?<!Agentic )\bAI(?=\s+(?:workflows?|agents?|pipelines?|systems?|matching|investor|models?|assistants?|platforms?|features?|copilots?|orchestration))/;
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (aiNoun.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(aiNoun, "Agentic AI");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    if (primaryOnly) return { wovenBullets: bullets, success: false };
+    const anyAi = /(?<!Agentic )\bAI\b(?=[\s-])/;
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (anyAi.test(b) && !exactRe.test(b) && !/\bartificial intelligence\b/i.test(b)) {
+        updatedBullets[i] = b.replace(anyAi, "Agentic AI");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/\b(?:LLMs?|RAG|LangChain|LangGraph|prompt)/i.test(b) && /\b(?:workflows?|pipelines?|systems?)\b/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\b(workflows?|pipelines?|systems?)\b/i, "Agentic AI $1");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
+  }
+
+  // 6. Cloud providers (Azure / AWS / GCP): anchor to existing cloud / container / mailbox-integration context
+  if (/^(?:azure|microsoft azure|aws|gcp|amazon web services|google cloud(?: platform)?)$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/\bcloud clusters?\b/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bcloud (clusters?)\b/i, `${normSkill} and cloud $1`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/\bcontainerized with Docker\b/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bcontainerized with Docker\b/i, `containerized with Docker on ${normSkill}`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    if (primaryOnly) return { wovenBullets: bullets, success: false };
+    if (/azure/i.test(normSkill)) {
+      for (let i = 0; i < updatedBullets.length; i++) {
+        const b = updatedBullets[i];
+        if (/\bOutlook\b/i.test(b) && !exactRe.test(b)) {
+          updatedBullets[i] = /\bMicrosoft\s+Outlook\b/i.test(b)
+            ? b.replace(/\bMicrosoft\s+Outlook\b/i, "Microsoft Azure/Outlook")
+            : b.replace(/\bOutlook\b/i, "Azure/Outlook");
+          return { wovenBullets: updatedBullets, success: true };
+        }
+      }
+    }
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/\bcloud\b/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bcloud\b/i, `${normSkill} cloud`);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+  }
+
   // 4. Generic contextual weaving: distribute at most 1 skill per bullet with clean commas
+  if (primaryOnly) return { wovenBullets: bullets, success: false };
   for (let i = 0; i < updatedBullets.length; i++) {
     const b = updatedBullets[i];
     if (b.length > 25 && !exactRe.test(b)) {
@@ -1460,7 +1557,23 @@ export function cleanAiText(text: string): string {
     .replace(/\band\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\s+manual\b/gi, "while $1 manual")
     .replace(/\bextract\s+equipment\s+and\s+instrument\s+tags\b/gi, "extract equipment tags");
 
+  // VERY FINAL step: re-run OCR sanitation (the LLM can reintroduce "Al") plus acronym/grammar guards
+  cleaned = sanitizeOcrText(cleaned)
+    .replace(/\bAl(?='s\b|-|\b)/g, "AI")
+    .replace(/\bAgentic Ai\b/gi, "Agentic AI")
+    .replace(/\b([Aa])\s+increase\b/g, (_m, a: string) => (a === "A" ? "An increase" : "an increase"))
+    .replace(/\s{2,}/g, " ");
+
   return cleaned.trim();
+}
+
+/** Joins a date range with "--" even when the dash was stripped ("2021 2025" -> "2021 -- 2025"). */
+export function formatDateRangeForLatex(raw?: string | null): string {
+  const s = (raw || "").trim();
+  if (!s) return "";
+  const stripped = s.match(/^((?:[A-Za-z]{3,9}\.?\s+)?\d{4})\s+((?:[A-Za-z]{3,9}\.?\s+)?\d{4}|Present|Current)$/i);
+  if (stripped) return `${stripped[1]} -- ${stripped[2]}`;
+  return s.replace(/\s*(?:[-–—]+|\bto\b)\s*/i, " -- ");
 }
 
 /**
@@ -1543,7 +1656,7 @@ export function generateLatexFromCanonical(
       const company = cleanAiText(exp.company || "Company");
       const role = cleanAiText(exp.role || "Role");
       const loc = cleanAiText(exp.location || "");
-      const dateRange = (exp.dateRange || "").replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ");
+      const dateRange = formatDateRangeForLatex(exp.dateRange);
 
       bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
 
@@ -1603,7 +1716,7 @@ export function generateLatexFromCanonical(
     bodyLatex += `\\section{PROJECTS}\n`;
     for (const proj of resume.projects) {
       const pTitle = formatLatexLine(cleanAiText(proj.title || ""), allKnownLinks);
-      const pDate = proj.dateRange ? proj.dateRange.replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ") : "";
+      const pDate = formatDateRangeForLatex(proj.dateRange);
       const pTech = proj.techStack ? formatLatexLine(cleanAiText(proj.techStack), allKnownLinks) : "";
 
       bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${pTitle}}}{${pDate}}\n`;
@@ -1629,7 +1742,11 @@ export function generateLatexFromCanonical(
       let inst = cleanAiText(edu.institution || "").replace(/^[•*–—\\-\s]+/, "").trim();
       let loc = cleanAiText(edu.location || "").replace(/^[•*–—\\-\s]+/, "").trim();
       let deg = cleanAiText(edu.degree || "").replace(/^[•*–—\\-\s]+/, "").trim();
-      let dStr = edu.dateRange ? edu.dateRange.replace(/\s*(?:[-–—]|\bto\b)\s*/i, " -- ") : "";
+      const eduAny = edu as Record<string, unknown>;
+      let dStr = formatDateRangeForLatex(
+        edu.dateRange ||
+          [eduAny.startDate, eduAny.endDate].filter((v) => typeof v === "string" && v.trim()).join(" -- ")
+      );
 
       if (inst.includes("|")) {
         const parts = inst.split("|").map((p) => p.trim()).filter(Boolean);
@@ -1854,100 +1971,165 @@ function getAllExperienceBullets(canonical: CanonicalResume): string[] {
 }
 
 /**
- * Trims lowest-priority / oldest minor bullet points if single-page resume overflows 1-page budget,
- * preserving readable typography (10pt base font, \linespread{1.15}, 2pt itemsep, 0.5in margins).
+ * Estimates rendered line count for the 10pt / 0.42in-margin template (calibrated against real compiles:
+ * a resume that estimates at <= ~64.5 fits on exactly one A4 page).
  */
-export function trimContentForSinglePage(canonical: CanonicalResume): {
+export function estimateRenderedLines(res: CanonicalResume): number {
+  const WRAP_SMALL = 118;
+  const WRAP_BODY = 108;
+  const wrap = (t: string, w: number) => Math.max(1, Math.ceil((t || "").length / w));
+  let lines = 3;
+  if (res.summary) lines += 1.3 + wrap(res.summary, WRAP_SMALL);
+  const ts = res.technicalSkills;
+  if (ts) {
+    lines += 1.3;
+    if (typeof ts === "object" && !Array.isArray(ts)) {
+      for (const [k, v] of Object.entries(ts as Record<string, string[] | string>)) {
+        lines += wrap(`${k}: ${Array.isArray(v) ? v.join(", ") : String(v)}`, WRAP_SMALL);
+      }
+    } else {
+      lines += wrap(Array.isArray(ts) ? ts.join(", ") : String(ts), WRAP_SMALL);
+    }
+  }
+  for (const exp of res.experience || []) {
+    lines += 2.6;
+    for (const b of exp.bullets || []) lines += wrap(b, WRAP_BODY) + 0.05;
+    for (const sub of exp.subheadings || []) {
+      lines += 1.3;
+      for (const b of sub.bullets || []) lines += wrap(b, WRAP_BODY) + 0.05;
+    }
+  }
+  for (const proj of res.projects || []) {
+    lines += 2.3;
+    for (const b of proj.bullets || []) lines += wrap(b, WRAP_BODY) + 0.05;
+  }
+  lines += 1.3 + (res.education?.length || 0) * 2.6;
+  if (res.achievements?.length) lines += 1.3 + res.achievements.length;
+  if (res.certifications?.length) lines += 2.3;
+  return lines;
+}
+
+export const SINGLE_PAGE_LINE_BUDGET = 64.5;
+
+/**
+ * Trims lowest-priority / oldest minor bullet points if the single-page resume would overflow,
+ * never removing the only Work Experience mention of a protected skill (Twice Rule).
+ */
+export function trimContentForSinglePage(
+  canonical: CanonicalResume,
+  options: { protectedSkills?: string[] } = {}
+): {
   canonical: CanonicalResume;
   trimmedCount: number;
 } {
   let trimmedCount = 0;
+  const protectedRes = (options.protectedSkills || []).map(literalSkillRegex);
 
-  function estimateTotalLines(res: CanonicalResume): number {
-    let lines = 4;
-    if (res.summary) lines += Math.ceil(res.summary.length / 85) + 1;
-    if (res.technicalSkills) {
-      if (typeof res.technicalSkills === "object" && !Array.isArray(res.technicalSkills)) {
-        lines += Object.keys(res.technicalSkills).length + 1;
-      } else {
-        lines += 3;
-      }
-    }
-    for (const exp of res.experience) {
-      lines += 2;
-      if (Array.isArray(exp.subheadings)) {
-        for (const sub of exp.subheadings) {
-          lines += 1.5;
-          if (Array.isArray(sub.bullets)) {
-            for (const b of sub.bullets) {
-              lines += Math.max(1, Math.ceil(b.length / 90)) + 0.2;
-            }
-          }
-        }
-      }
-      if (Array.isArray(exp.bullets)) {
-        for (const b of exp.bullets) {
-          lines += Math.max(1, Math.ceil(b.length / 90)) + 0.2;
-        }
-      }
-    }
-    for (const proj of res.projects) {
-      lines += 2;
-      if (Array.isArray(proj.bullets)) {
-        for (const b of proj.bullets) {
-          lines += Math.max(1, Math.ceil(b.length / 90)) + 0.2;
-        }
-      }
-    }
-    lines += (res.education?.length || 1) * 2;
-    lines += res.achievements?.length || 0;
-    lines += res.certifications?.length || 0;
-    return lines;
-  }
-
-  let currentLines = estimateTotalLines(canonical);
-
-  // If <= 46 lines or multi-page (>72 lines), no trimming needed
-  if (currentLines <= 46 || currentLines > 72) {
+  let currentLines = estimateRenderedLines(canonical);
+  // Within budget, or so long it is intentionally multi-page: leave untouched
+  if (currentLines <= SINGLE_PAGE_LINE_BUDGET || currentLines > 100) {
     return { canonical, trimmedCount: 0 };
   }
 
-  // Iterate backwards through older roles
-  for (let e = canonical.experience.length - 1; e >= 0; e--) {
-    const exp = canonical.experience[e];
+  const isSoleCarrier = (bullet: string): boolean => {
+    const all = getAllExperienceBullets(canonical);
+    return protectedRes.some((re) => re.test(bullet) && all.filter((x) => re.test(x)).length === 1);
+  };
 
-    if (Array.isArray(exp.subheadings) && exp.subheadings.length > 0) {
-      for (let s = exp.subheadings.length - 1; s >= 0; s--) {
-        const sub = exp.subheadings[s];
-        if (Array.isArray(sub.bullets) && sub.bullets.length >= 3) {
-          sub.bullets.pop();
-          trimmedCount++;
-          currentLines = estimateTotalLines(canonical);
-          if (currentLines <= 46) return { canonical, trimmedCount };
-        }
+  const tryPop = (arr: string[] | undefined): boolean => {
+    if (!Array.isArray(arr) || arr.length < 3) return false;
+    // pop the last non-protected bullet
+    for (let i = arr.length - 1; i >= 1; i--) {
+      if (!isSoleCarrier(arr[i])) {
+        arr.splice(i, 1);
+        trimmedCount++;
+        currentLines = estimateRenderedLines(canonical);
+        return true;
       }
     }
+    return false;
+  };
 
-    if (Array.isArray(exp.bullets) && exp.bullets.length >= 3) {
-      exp.bullets.pop();
-      trimmedCount++;
-      currentLines = estimateTotalLines(canonical);
-      if (currentLines <= 46) return { canonical, trimmedCount };
+  // Sweep repeatedly (oldest role first) so trimming is spread, one bullet per group per sweep
+  for (let sweep = 0; sweep < 6 && currentLines > SINGLE_PAGE_LINE_BUDGET; sweep++) {
+    let popped = false;
+    for (let e = canonical.experience.length - 1; e >= 0 && currentLines > SINGLE_PAGE_LINE_BUDGET; e--) {
+      const exp = canonical.experience[e];
+      for (let sIdx = (exp.subheadings?.length || 0) - 1; sIdx >= 0 && currentLines > SINGLE_PAGE_LINE_BUDGET; sIdx--) {
+        if (tryPop(exp.subheadings![sIdx].bullets)) popped = true;
+      }
+      if (currentLines > SINGLE_PAGE_LINE_BUDGET && tryPop(exp.bullets)) popped = true;
     }
-  }
-
-  // If still overflowing, check projects with >= 3 bullets
-  for (let p = canonical.projects.length - 1; p >= 0; p--) {
-    const proj = canonical.projects[p];
-    if (Array.isArray(proj.bullets) && proj.bullets.length >= 3) {
-      proj.bullets.pop();
-      trimmedCount++;
-      currentLines = estimateTotalLines(canonical);
-      if (currentLines <= 46) return { canonical, trimmedCount };
+    for (let pIdx = canonical.projects.length - 1; pIdx >= 0 && currentLines > SINGLE_PAGE_LINE_BUDGET; pIdx--) {
+      if (tryPop(canonical.projects[pIdx].bullets)) popped = true;
     }
+    if (!popped) break;
   }
 
   return { canonical, trimmedCount };
+}
+
+/** Canonical skill buckets used when routing JD skills into Technical Skills. */
+export type SkillBucket = "Languages" | "Frontend" | "Backend" | "AI/ML" | "Databases/Cloud" | "Other";
+
+const PROGRAMMING_LANGUAGES = new Set([
+  "python", "c++", "c", "c#", "java", "go", "golang", "rust", "javascript", "typescript", "sql", "kotlin",
+  "swift", "php", "ruby", "scala", "r", "bash", "dart", "matlab", "html/css",
+]);
+
+export function classifySkillBucket(skill: string): SkillBucket {
+  const s = skill.toLowerCase().trim();
+  if (PROGRAMMING_LANGUAGES.has(s) && s !== "html/css") return "Languages";
+  if (
+    /^(?:azure|microsoft azure|aws|amazon web services|gcp|google cloud(?: platform)?|docker|kubernetes|k8s|terraform|ci\/cd|cicd|mysql|postgres(?:ql)?|mongodb|dynamodb|snowflake|kafka|apache kafka|rabbitmq|redis|pub\/sub|elasticsearch|bigquery|cloud|devops|jenkins|github actions|serverless|lambda|s3|ec2|cosmos ?db|sqlite|oracle|nosql|databases?)$/i.test(
+      s
+    )
+  ) {
+    return "Databases/Cloud";
+  }
+  if (
+    /^(?:agentic ai|ai agents?|multi-agent systems?|artificial intelligence|ai|genai|generative ai|machine learning|deep learning|nlp|natural language processing|llms?|large language models?|rag|langchain|langgraph|pytorch|tensorflow|computer vision|ocr|yolo|opencv|vlm|transformers|hugging ?face|scikit-learn|mlops|prompt engineering)$/i.test(
+      s
+    )
+  ) {
+    return "AI/ML";
+  }
+  if (
+    /^(?:fastapi|django|flask|spring boot|springboot|graphql|grpc|\.net|dotnet|asp\.net|microservices?|node\.?js|node|express(?:\.js)?|rest(?: ?apis?)?|restful(?: apis?)?|websockets?|distributed systems|system design|zeromq|backend|apis?)$/i.test(
+      s
+    )
+  ) {
+    return "Backend";
+  }
+  if (/^(?:react(?:\.js)?|next\.?js|vue(?:\.js)?|angular|redux|tailwind(?: css)?|html\/css|html|css|sass|frontend|react native|webpack)$/i.test(s)) {
+    return "Frontend";
+  }
+  return "Other";
+}
+
+/** Finds (or names) the Technical Skills row that a skill belongs to, never routing non-languages to Languages. */
+function resolveSkillCategoryKey(existingKeys: string[], skill: string): string {
+  const bucket = classifySkillBucket(skill);
+  const find = (re: RegExp, exclude?: RegExp) => existingKeys.find((k) => re.test(k) && !(exclude && exclude.test(k)));
+  switch (bucket) {
+    case "Languages":
+      return find(/lang/i) || "Languages";
+    case "Frontend":
+      return find(/front/i) || "Frontend";
+    case "Backend":
+      return find(/back/i) || "Backend";
+    case "AI/ML":
+      return find(/\bai\b|ai\/ml|\bml\b|machine|artificial|intelligen|llm/i, /database/i) || "AI/ML";
+    case "Databases/Cloud":
+      return find(/database|cloud/i) || find(/\bdb\b|infra|devops|system|platform/i) || "Databases/Cloud";
+    default:
+      return (
+        find(/system|tool|concept|other|platform|infra/i) ||
+        find(/back/i) ||
+        existingKeys.find((k) => !/lang/i.test(k)) ||
+        "Systems"
+      );
+  }
 }
 
 /**
@@ -1976,23 +2158,8 @@ export function addSkillToTechnicalSkills(canonical: CanonicalResume, skill: str
       }
     }
 
-    // Determine target category
-    let targetCat = "";
-    if (/artificial intelligence|machine learning|deep learning|rag|vlm|llm|computer vision|ocr|yolo/i.test(lowerSkill)) {
-      targetCat = Object.keys(record).find((k) => /ai|ml|data/i.test(k)) || "AI/ML";
-    } else if (/python|javascript|typescript|c\+\+|sql|golang|rust|java\b/i.test(lowerSkill)) {
-      targetCat = Object.keys(record).find((k) => /lang/i.test(k)) || "Languages";
-    } else if (/react|next|vue|angular|tailwind|frontend/i.test(lowerSkill)) {
-      targetCat = Object.keys(record).find((k) => /front/i.test(k)) || "Frontend";
-    } else if (/node|express|fastapi|flask|django|backend|api/i.test(lowerSkill)) {
-      targetCat = Object.keys(record).find((k) => /back/i.test(k)) || "Backend";
-    } else if (/docker|kubernetes|microservices|distributed|aws|gcp|cloud|system/i.test(lowerSkill)) {
-      targetCat = Object.keys(record).find((k) => /sys|cloud|infra|devops/i.test(k)) || "Systems";
-    }
-
-    if (!targetCat) {
-      targetCat = Object.keys(record)[0] || "Languages";
-    }
+    // Determine target category with strict routing (cloud/DevOps tools are NEVER languages)
+    const targetCat = resolveSkillCategoryKey(Object.keys(record), cleanSkill);
 
     if (!record[targetCat]) {
       record[targetCat] = [cleanSkill];
@@ -2011,6 +2178,104 @@ export function addSkillToTechnicalSkills(canonical: CanonicalResume, skill: str
   return false;
 }
 
+/** Weaves a skill into the best-fitting bullet group: primary (specific) anchors across ALL groups first, then fallbacks. */
+function weaveSkillIntoCanonical(canonical: CanonicalResume, skill: string): boolean {
+  const re = literalSkillRegex(skill);
+  for (const primaryOnly of [true, false]) {
+    for (const exp of canonical.experience) {
+      for (const sub of exp.subheadings || []) {
+        const res = weaveSkillIntoExperienceBullets(sub.bullets, skill, { primaryOnly });
+        if (res.success && res.wovenBullets.some((b) => re.test(b))) {
+          sub.bullets = res.wovenBullets;
+          return true;
+        }
+      }
+      if (Array.isArray(exp.bullets)) {
+        const res = weaveSkillIntoExperienceBullets(exp.bullets, skill, { primaryOnly });
+        if (res.success && res.wovenBullets.some((b) => re.test(b))) {
+          exp.bullets = res.wovenBullets;
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function literalSkillRegex(skill: string): RegExp {
+  const escaped = [...skill.trim()].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
+  return new RegExp("(^|[^a-z0-9+#.])" + escaped + "(?=$|[^a-z0-9+#.])", "i");
+}
+
+function technicalSkillsFlat(canonical: CanonicalResume): string[] {
+  const ts = canonical.technicalSkills;
+  if (!ts) return [];
+  if (Array.isArray(ts)) return ts.map((s) => String(s).trim()).filter(Boolean);
+  if (typeof ts === "object") {
+    return Object.values(ts as Record<string, string[] | string>).flatMap((v) =>
+      Array.isArray(v) ? v.map((x) => String(x).trim()) : String(v).split(/,\s*/).map((x) => x.trim())
+    ).filter(Boolean);
+  }
+  return String(ts).split(/,\s*/).map((x) => x.trim()).filter(Boolean);
+}
+
+function removeSkillFromTechnicalSkills(canonical: CanonicalResume, skill: string): void {
+  const lower = skill.toLowerCase();
+  const ts = canonical.technicalSkills;
+  if (Array.isArray(ts)) {
+    canonical.technicalSkills = ts.filter((s) => String(s).toLowerCase() !== lower) as typeof canonical.technicalSkills;
+  } else if (ts && typeof ts === "object") {
+    const rec = ts as Record<string, string[] | string>;
+    for (const [k, v] of Object.entries(rec)) {
+      if (Array.isArray(v)) {
+        rec[k] = v.filter((x) => String(x).toLowerCase() !== lower);
+      } else {
+        rec[k] = String(v).split(/,\s*/).filter((x) => x.trim().toLowerCase() !== lower).join(", ");
+      }
+    }
+  }
+}
+
+/**
+ * STRICT 100% "Twice Rule": every target-JD skill that is present in Technical Skills (whether newly
+ * added from the JD or already on the resume) must also appear verbatim in Work Experience bullets.
+ * Missing ones are woven into the best-fitting bullet; JD-added skills that cannot be grounded
+ * naturally are removed rather than left as unproven claims.
+ */
+export function enforceStrictTwiceRule(
+  canonical: CanonicalResume,
+  targetSkills: string[],
+  options: { addedFromJD?: Set<string> } = {}
+): { woven: string[]; removed: string[]; unresolved: string[] } {
+  const woven: string[] = [];
+  const removed: string[] = [];
+  const unresolved: string[] = [];
+  const seen = new Set<string>();
+
+  for (const skill of targetSkills) {
+    const key = skill.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+
+    const re = literalSkillRegex(skill);
+    const listed = technicalSkillsFlat(canonical).some((s) => s.toLowerCase() === key || re.test(s));
+    if (!listed) continue;
+    if (getAllExperienceBullets(canonical).some((b) => re.test(b))) continue;
+
+    const ok = weaveSkillIntoCanonical(canonical, skill);
+
+    if (ok) {
+      woven.push(skill);
+    } else if (options.addedFromJD?.has(key)) {
+      removeSkillFromTechnicalSkills(canonical, skill);
+      removed.push(skill);
+    } else {
+      unresolved.push(skill);
+    }
+  }
+  return { woven, removed, unresolved };
+}
+
 /**
  * Validates that all tools listed in Technical Skills are grounded in work history/projects.
  * Self-corrects any orphaned skills by contextually weaving them into experience bullets (Twice Rule)
@@ -2018,30 +2283,30 @@ export function addSkillToTechnicalSkills(canonical: CanonicalResume, skill: str
  */
 export function validateAndProtectOrphanedSkills(
   resumeText: string,
-  experienceBullets: string[]
+  experienceBullets: string[],
+  targetSkills?: string[]
 ): { sanitizedText: string; orphanedSkills: string[]; wovenBullets?: string[] } {
   const canonical = parseResumeToCanonical(resumeText);
   const currentBullets = getAllExperienceBullets(canonical);
   const orphaned: string[] = [];
   const updatedBullets = [...experienceBullets];
+  const targetSet = targetSkills ? new Set(targetSkills.map((t) => t.trim().toLowerCase())) : null;
 
-  // Inspect technical skills to check if any newly added skills are orphaned
-  if (typeof canonical.technicalSkills === "object" && !Array.isArray(canonical.technicalSkills) && canonical.technicalSkills !== null) {
-    const record = canonical.technicalSkills as Record<string, string[] | string>;
-    for (const [_, skills] of Object.entries(record)) {
-      const list = Array.isArray(skills) ? skills : String(skills).split(/,\s*/);
-      for (const sk of list) {
-        const cleanSk = cleanAiText(sk).trim();
-        if (!cleanSk || cleanSk.length < 3) continue;
-        const inExp = currentBullets.some((b) => containsSkill(b, cleanSk));
-        if (!inExp) {
-          orphaned.push(cleanSk);
-          // Auto-weave into bullets to guarantee Twice Rule compliance
-          const res = weaveSkillIntoExperienceBullets(updatedBullets, cleanSk);
-          if (res.success) {
-            updatedBullets.splice(0, updatedBullets.length, ...res.wovenBullets);
-          }
-        }
+  // Inspect EVERY skill in Technical Skills (new JD additions and existing JD-matching skills alike);
+  // verbatim mentions are required, alias matches do not count.
+  const seen = new Set<string>();
+  for (const sk of technicalSkillsFlat(canonical)) {
+    const cleanSk = cleanAiText(sk).trim();
+    if (!cleanSk || cleanSk.length < 3 || seen.has(cleanSk.toLowerCase())) continue;
+    seen.add(cleanSk.toLowerCase());
+    if (targetSet && !targetSet.has(cleanSk.toLowerCase())) continue;
+    const re = literalSkillRegex(cleanSk);
+    const inExp = currentBullets.some((b) => re.test(b)) || updatedBullets.some((b) => re.test(b));
+    if (!inExp) {
+      orphaned.push(cleanSk);
+      const res = weaveSkillIntoExperienceBullets(updatedBullets, cleanSk);
+      if (res.success) {
+        updatedBullets.splice(0, updatedBullets.length, ...res.wovenBullets);
       }
     }
   }
@@ -2051,6 +2316,29 @@ export function validateAndProtectOrphanedSkills(
     orphanedSkills: orphaned,
     wovenBullets: updatedBullets,
   };
+}
+
+/**
+ * Resolves the clean target role title for the summary: explicit param > "looking for/title:" patterns
+ * > first role-like line of the JD (e.g. "AI Engineer - Agentic AI" -> "AI Engineer") > "Software Engineer".
+ */
+export function resolveTargetRoleTitle(jobText: string, explicit?: string): string {
+  const clean = (raw: string) => normalizeJobIdentity({ jobTitle: raw }).jobTitle || raw.trim();
+  if (explicit && explicit.trim()) return clean(explicit);
+
+  const m = (jobText || "").match(
+    /(?:looking for (?:a|an)?|seeking (?:a|an)?|hiring (?:a|an)?|title:?\s*)([A-Za-z0-9\s-]{4,40}?)(?:\.|\n|,|with|to)/i
+  );
+  if (m && ROLE_KEYWORDS.test(m[1])) return clean(m[1]);
+
+  for (const line of (jobText || "").split("\n").slice(0, 4)) {
+    const t = line.trim();
+    if (t && t.length <= 80 && ROLE_KEYWORDS.test(t)) {
+      const cleaned = clean(t);
+      if (cleaned && cleaned.length <= 50) return cleaned;
+    }
+  }
+  return m ? clean(m[1]) : "Software Engineer";
 }
 
 /**
@@ -2069,6 +2357,8 @@ export function runAllRemediationPasses(params: {
   audit?: UnifiedATSAudit | null;
   jobText: string;
   customMetrics?: Record<number, string>;
+  /** Clean role title from the JD (e.g. "AI Engineer"); used for the summary instead of a generic default. */
+  targetRoleTitle?: string;
 }): {
   optimizedText: string;
   optimizedLatex: string;
@@ -2091,6 +2381,7 @@ export function runAllRemediationPasses(params: {
   let twicePromotions = 0;
   let metricsAdded = 0;
   let grammarFixes = 0;
+  const strictAddedFromJD = new Set<string>();
 
   // PASS 1: AI PAR Rewrites
   if (params.audit?.action_verb_and_par_rewrites) {
@@ -2198,22 +2489,6 @@ export function runAllRemediationPasses(params: {
     const jdReqs = extractRequirementsFromJobText(params.jobText);
     const targetKeywords = jdReqs.map((r) => r.keyword);
 
-    // Summary rewriting
-    if (canonical.summary) {
-      const targetRoleMatch = params.jobText.match(
-        /(?:looking for (?:a|an)?|seeking (?:a|an)?|hiring (?:a|an)?|title:?\s*)([A-Za-z0-9\s-]{4,40}?)(?:\.|\n|,|with|to)/i
-      );
-      const targetRole = targetRoleMatch ? targetRoleMatch[1].trim() : "Software Engineer";
-      const domainTerms = targetKeywords.filter((k) =>
-        /microservice|distributed|architecture|cloud|real-time|system design|data/i.test(k)
-      );
-      const allText = canonicalToPlainText(canonical);
-      const candidateSkills = jdReqs
-        .filter((r) => containsSkill(allText, r.keyword))
-        .map((r) => r.keyword);
-      canonical.summary = rewriteSummaryWithJDAlignment(canonical.summary, targetRole, domainTerms, candidateSkills);
-    }
-
     // Bullet Reframing (Google XYZ format)
     const expBullets = getAllExperienceBullets(canonical);
     if (expBullets.length > 0) {
@@ -2242,54 +2517,40 @@ export function runAllRemediationPasses(params: {
 
     // 1. Add all relevant target JD skills to Technical Skills first
     for (const skill of jdSkillsToWeave) {
-      addSkillToTechnicalSkills(canonical, skill);
-    }
-
-    // 2. Weave up to 4 target JD skills into experience bullets (max 1 per bullet)
-    let totalNewlyWoven = 0;
-    const maxSkillsToWeave = 4;
-
-    for (const skill of jdSkillsToWeave) {
-      if (totalNewlyWoven >= maxSkillsToWeave) break;
-
-      const currentBullets = getAllExperienceBullets(canonical);
-      const escaped = [...skill.trim()].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
-      const exactRe = new RegExp("(^|[^a-z0-9+#.])" + escaped + "(?=$|[^a-z0-9+#.])", "i");
-      const isAlreadyInBullets = currentBullets.some((b) => exactRe.test(b));
-
-      if (isAlreadyInBullets) continue; // Already present with exact skill name!
-
-      let woven = false;
-      for (const exp of canonical.experience) {
-        if (Array.isArray(exp.subheadings)) {
-          for (const sub of exp.subheadings) {
-            const res = weaveSkillIntoExperienceBullets(sub.bullets, skill);
-            if (res.success) {
-              sub.bullets = res.wovenBullets;
-              twicePromotions++;
-              totalNewlyWoven++;
-              woven = true;
-              break;
-            }
-          }
-        }
-        if (woven) break;
-        if (Array.isArray(exp.bullets)) {
-          const res = weaveSkillIntoExperienceBullets(exp.bullets, skill);
-          if (res.success) {
-            exp.bullets = res.wovenBullets;
-            twicePromotions++;
-            totalNewlyWoven++;
-            woven = true;
-            break;
-          }
-        }
-      }
+      if (addSkillToTechnicalSkills(canonical, skill)) strictAddedFromJD.add(skill.trim().toLowerCase());
     }
   }
 
-  // PASS 5: Content Trimming Fallback for single-page budget
-  trimContentForSinglePage(canonical);
+  // PASS 4b: strict 100% Twice Rule across ALL target JD skills present in Technical Skills,
+  // then the summary (written last so it only names skills that are really on the final resume)
+  let protectedSkills: string[] = [];
+  if (params.jobText && params.jobText.trim()) {
+    const jdReqsFinal = extractRequirementsFromJobText(params.jobText);
+    const strictTargets = jdReqsFinal
+      .map((r) => r.keyword)
+      .filter((kw) => kw.trim().length >= 3 && !/^(engineer|software|developer|team|experience|years|work|strong|ability)$/i.test(kw.trim()));
+    const strict = enforceStrictTwiceRule(canonical, strictTargets, { addedFromJD: strictAddedFromJD });
+    twicePromotions += strict.woven.length;
+    protectedSkills = strictTargets;
+
+    if (canonical.summary) {
+      const targetRole = resolveTargetRoleTitle(params.jobText, params.targetRoleTitle);
+      const domainTerms = jdReqsFinal
+        .map((r) => r.keyword)
+        .filter((k) => /microservice|distributed|architecture|cloud|real-time|system design|data/i.test(k));
+      const finalEvidence = `${technicalSkillsFlat(canonical).join(", ")}\n${getAllExperienceBullets(canonical).join("\n")}`;
+      const jdLower = params.jobText.toLowerCase();
+      const mentions = (kw: string) => (jdLower.match(new RegExp(literalSkillRegex(kw).source, "gi")) || []).length;
+      const candidateSkills = jdReqsFinal
+        .filter((r) => literalSkillRegex(r.keyword).test(finalEvidence) && !domainTerms.includes(r.keyword))
+        .sort((x, y) => mentions(y.keyword) - mentions(x.keyword) || (y.weightMultiplier ?? 0) - (x.weightMultiplier ?? 0))
+        .map((r) => r.keyword);
+      canonical.summary = rewriteSummaryWithJDAlignment(canonical.summary, targetRole, domainTerms, candidateSkills);
+    }
+  }
+
+  // PASS 5: Content Trimming Fallback for single-page budget (never drops the sole carrier of a listed skill)
+  trimContentForSinglePage(canonical, { protectedSkills });
 
   // PASS 6: Grammar & Cleanup
   if (params.audit?.grammar_spelling_dialect_audit) {
@@ -2362,6 +2623,7 @@ export async function autoTailorResumeToJD(params: {
   sourceLatex?: string;
   jobText: string;
   companyName?: string;
+  targetRoleTitle?: string;
 }): Promise<{
   optimizedText: string;
   optimizedLatex: string;
@@ -2390,6 +2652,7 @@ export async function autoTailorResumeToJD(params: {
     latex: params.sourceLatex,
     audit,
     jobText: params.jobText,
+    targetRoleTitle: params.targetRoleTitle,
   });
 
   const finalLatex = ensureAllHrefsPreservedInLatex(

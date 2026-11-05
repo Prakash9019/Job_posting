@@ -159,6 +159,7 @@ export async function POST(req: NextRequest) {
       sourceLatex,
       jobText,
       companyName: companyName || undefined,
+      targetRoleTitle: jobTitle || undefined,
     });
 
     let effectiveResumeId = resume.id;

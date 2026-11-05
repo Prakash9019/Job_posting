@@ -1,5 +1,5 @@
 import { getStorageProvider } from "@/lib/storage";
-import { CanonicalResume, parseResumeToCanonical, getCandidateFilename } from "@/lib/ats/tailor";
+import { CanonicalResume, getCandidateFilename, canonicalToPlainText } from "@/lib/ats/tailor";
 
 // Polyfill browser canvas / DOM primitives required by pdfjs-dist in headless serverless environments (Node.js / Vercel)
 if (typeof globalThis.DOMMatrix === "undefined") {
@@ -181,6 +181,56 @@ const REFERENCE_ACHIEVEMENTS: ReferenceProjectAchievement[] = [
   },
 ];
 
+export function skillAppearsVerbatim(text: string, skill: string): boolean {
+  const escaped = [...skill.trim()].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
+  return new RegExp("(^|[^a-z0-9+#.])" + escaped + "(?=$|[^a-z0-9+#.])", "i").test(text);
+}
+
+/** Skills a cold email may claim = JD target skills that are verbatim on the FINAL tailored resume. */
+export function getVerifiedResumeText(canonicalResume?: CanonicalResume, resumeText?: string): string {
+  if (canonicalResume) {
+    const skills = canonicalResume.technicalSkills;
+    const skillText = Array.isArray(skills)
+      ? skills.join(", ")
+      : skills && typeof skills === "object"
+        ? Object.values(skills as Record<string, string[] | string>).map((v) => (Array.isArray(v) ? v.join(", ") : String(v))).join(", ")
+        : String(skills || "");
+    const bullets = (canonicalResume.experience || []).flatMap((e) => [
+      ...(e.bullets || []),
+      ...((e.subheadings || []).flatMap((sub: { bullets?: string[] }) => sub.bullets || [])),
+    ]);
+    return `${skillText}\n${bullets.join("\n")}`;
+  }
+  return resumeText || "";
+}
+
+/**
+ * Intersection Rule: email skills = JobTargetProfile skills ∩ skills actually present in the final tailored
+ * resume (skills + experience). Never claims a language/framework (e.g. C#, .NET) the resume omits.
+ * When neither a canonical resume nor resume text is available, nothing can be verified, so the list is returned as-is.
+ */
+export function intersectSkillsWithResume(
+  targetSkills: string[],
+  canonicalResume?: CanonicalResume,
+  resumeText?: string
+): string[] {
+  const evidence = getVerifiedResumeText(canonicalResume, resumeText);
+  if (!evidence.trim()) return targetSkills;
+  return targetSkills.filter((sk) => skillAppearsVerbatim(evidence, sk));
+}
+
+/** Skills on the resume (flattened Technical Skills) used to backfill when the JD overlap is thin. */
+function flattenResumeSkills(canonicalResume?: CanonicalResume): string[] {
+  const skills = canonicalResume?.technicalSkills;
+  if (!skills) return [];
+  const flat = Array.isArray(skills)
+    ? skills.map(String)
+    : typeof skills === "object"
+      ? Object.values(skills as Record<string, string[] | string>).flatMap((v) => (Array.isArray(v) ? v.map(String) : String(v).split(/,\s*/)))
+      : String(skills).split(/,\s*/);
+  return flat.map((x) => x.trim()).filter(Boolean);
+}
+
 /**
  * Generates a concise, high-conversion ~115-word cold outreach email
  * using the structured JobTargetProfile and top 2 tailored project achievements
@@ -242,8 +292,12 @@ export async function generateTargetedColdEmail(params: {
     }
   }
 
-  // Fallback skills if JD didn't supply specific terms
-  const targetSkills = cleanTargetSkills.length > 0 ? cleanTargetSkills : ["Python", "Artificial Intelligence", "FastAPI"];
+  // INTERSECTION RULE: only claim JD skills that are really on the final tailored resume
+  let targetSkills = intersectSkillsWithResume(cleanTargetSkills, params.canonicalResume, params.resumeText);
+  if (targetSkills.length === 0) {
+    const backfill = flattenResumeSkills(params.canonicalResume).slice(0, 3);
+    targetSkills = backfill.length > 0 ? backfill : ["Python"];
+  }
 
   // Top 2 skills for Subject Line
   const top2Skills = targetSkills.slice(0, 2);
@@ -290,7 +344,7 @@ export async function generateTargetedColdEmail(params: {
         lowerTargetTerms.some((term) => term === tech.toLowerCase())
       )
     )
-  );
+  ).filter((tech) => targetSkills.some((t) => t.toLowerCase() === tech.toLowerCase()));
 
   const recipientGreeting =
     jobProfile.hiringManagerName || jobProfile.contactName
@@ -326,6 +380,6 @@ export async function generateTargetedColdEmail(params: {
       `${ach2.company}: ${ach2.projectTitle}`,
     ],
     keyMetricsUsed: [ach1.metric, ach2.metric],
-    targetStackMatched: matchedStack.length > 0 ? matchedStack : top2Skills,
+    targetStackMatched: targetSkills,
   };
 }

@@ -251,6 +251,7 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
               sourceLatex,
               jobText: jobText || `${extraction.jobTitle || "Role"} at ${extraction.companyName || "Company"}`,
               companyName: extraction.companyName || undefined,
+              targetRoleTitle: extraction.jobTitle || undefined,
             });
 
             effectiveResumeText = tailored.optimizedText;

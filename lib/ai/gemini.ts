@@ -1,6 +1,13 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
-import { isReadableResumeText, JobTargetProfile, generateTargetedColdEmail } from "@/lib/ai/resume";
+import {
+  isReadableResumeText,
+  JobTargetProfile,
+  generateTargetedColdEmail,
+  intersectSkillsWithResume,
+  skillAppearsVerbatim,
+} from "@/lib/ai/resume";
 import { CanonicalResume, CRITICAL_TWICE_RULE_PROMPT_BLOCK } from "@/lib/ats/tailor";
+import { applyJobIdentityRules, JOB_IDENTITY_PROMPT_RULES } from "@/lib/ats/job-identity";
 import {
   GeminiExtraction,
   GeminiExtractionSchema,
@@ -41,7 +48,7 @@ CRITICAL SECURITY AND ACCURACY RULES:
 8. Do not summarize away technical requirements.
 9. If the screenshot is a LinkedIn recruiter post, include the recruiter's exact ask, required experience, technologies, location, and how to apply.
 10. Use evidenceText to quote the most important visible text supporting your extraction.
-
+${JOB_IDENTITY_PROMPT_RULES}
 Classify into exactly one category:
 - JOB_POST: Job opportunity post or job description.
 - RECRUITER_CONTACT: Recruiter or hiring manager outreach/post with contact information.
@@ -126,7 +133,7 @@ export async function extractFromScreenshot(
 
     const rawParsed = JSON.parse(cleanedJson);
 
-    return GeminiExtractionSchema.parse(rawParsed);
+    return applyJobIdentityRules(GeminiExtractionSchema.parse(rawParsed));
   } catch (error: unknown) {
     console.error("Gemini Extraction Error:", error);
 
@@ -186,7 +193,7 @@ export async function extractJobDetailsFromText(
       .trim();
 
     const rawParsed = JSON.parse(cleanedJson);
-    return GeminiExtractionSchema.parse(rawParsed);
+    return applyJobIdentityRules(GeminiExtractionSchema.parse(rawParsed));
   } catch (error: unknown) {
     console.error("Gemini Text Extraction Error:", error);
 
@@ -237,6 +244,7 @@ Structure the email as exactly 3 clean paragraphs (strictly 100–130 words tota
    Loka Surya Prakash
 
 STRICT FACTUAL GROUNDING RULES:
+0. SKILL PARITY: In Paragraph 1 and the subject line, name ONLY skills from VERIFIED_MATCHED_SKILLS (the strict intersection of the JD skills and the final tailored resume). NEVER mention any skill listed under REJECTED_JD_SKILLS or any language/framework that is not on the resume.
 1. Use ONLY facts explicitly present in the provided resume text.
 2. Never invent skills, companies, or fake metrics. Real verified metrics from candidate work history include:
    - 42% development time reduction (Julley Online Private Limited PMS Hub)
@@ -285,6 +293,20 @@ export async function generateApplicationEmail(params: {
     targetStack: jobDetails.requiredSkills || [],
   };
 
+  const jdSkillCandidates = Array.from(
+    new Map(
+      [
+        ...(effectiveJobProfile.primaryTechStack || effectiveJobProfile.targetStack || jobDetails.requiredSkills || []),
+        ...(effectiveJobProfile.architectureAndDomainKeywords || []),
+      ]
+        .map((x) => String(x).trim())
+        .filter(Boolean)
+        .map((x) => [x.toLowerCase(), x] as const)
+    ).values()
+  );
+  const verifiedSkills = intersectSkillsWithResume(jdSkillCandidates, canonicalResume, resumeText);
+  const rejectedSkills = jdSkillCandidates.filter((x) => !verifiedSkills.includes(x));
+
   const userPrompt = `
 TARGET_ROLE: ${effectiveJobProfile.targetRoleTitle || effectiveJobProfile.targetRole || "Software Engineer"}
 COMPANY: ${effectiveJobProfile.companyName || "the hiring team"}
@@ -297,8 +319,11 @@ CONTACT_ROLE: ${jobDetails.contactRole || "Recruiter"}
 JOB_REQUIREMENTS:
 ${jobDetails.jobDescription || "No detailed job description was extracted."}
 
-REQUIRED_SKILLS:
-${(effectiveJobProfile.primaryTechStack || jobDetails.requiredSkills || []).join(", ") || "Not specified"}
+VERIFIED_MATCHED_SKILLS (the ONLY JD skills you may claim):
+${verifiedSkills.join(", ") || "None - speak generally about the candidate's verified resume skills"}
+
+REJECTED_JD_SKILLS (NOT on the resume - never mention):
+${rejectedSkills.join(", ") || "None"}
 
 CANDIDATE_NAME: ${senderName}
 CANDIDATE_EMAIL: ${senderEmail || "Not specified"}
@@ -312,7 +337,7 @@ ${resumeText}
 TASK:
 1. Write a 3-paragraph cold outreach email strictly 100–130 words following the system instruction.
 2. Subject line format: "Application for [Target Role Title] — Loka Surya Prakash | [Top 2 Matched JD Skills]"
-3. Paragraph 1: State role, company, and align with top 3 matched JD skills.
+3. Paragraph 1: State role, company, and align with up to 3 skills taken ONLY from VERIFIED_MATCHED_SKILLS.
 4. Paragraph 2: Reference 2 specific quantified engineering achievements from Julley Online Private Limited or Vertx with real metrics (42%, 35%, 38%, 99.9%).
 5. Paragraph 3: Mention the attached single-page resume (${attachmentFilename || "Resume_Loka_Surya_Prakash.pdf"}) and clean GitHub/LinkedIn links.
 
@@ -380,7 +405,11 @@ Return JSON with keys:
     const wordCount = validated.body.trim().split(/\s+/).filter(Boolean).length;
     const hasUnreplacedBracket = /\[(?:Company|Role|Name|Percent|X|Y)\]/i.test(validated.body);
 
-    if (wordCount >= 95 && wordCount <= 135 && !hasUnreplacedBracket) {
+    const claimsRejectedSkill = rejectedSkills.some((sk) =>
+      skillAppearsVerbatim(`${validated.subject}\n${validated.body}`, sk)
+    );
+
+    if (wordCount >= 95 && wordCount <= 135 && !hasUnreplacedBracket && !claimsRejectedSkill) {
       return validated;
     }
   } catch (aiErr) {

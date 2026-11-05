@@ -113,6 +113,7 @@ export async function POST(
         sourceLatex,
         jobText,
         companyName: jobDetails.companyName || undefined,
+        targetRoleTitle: jobDetails.jobTitle || undefined,
       });
       effectiveResumeText = tailored.optimizedText;
       tailoredCanonical = tailored.canonical;

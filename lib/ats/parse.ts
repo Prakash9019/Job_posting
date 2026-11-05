@@ -11,6 +11,12 @@ import {
 import { sanitizeOcrText } from "./hyperlinks";
 
 export { latexToPlainText, normalizeWrappedBullets, sanitizeOcrText };
+export {
+  normalizeJobIdentity,
+  applyJobIdentityRules,
+  companyFromEmailDomain,
+  isTechTrackTerm,
+} from "./job-identity";
 
 export interface CompetencyMatrix {
   primaryTechStack: Requirement[];

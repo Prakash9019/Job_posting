@@ -405,6 +405,33 @@ function countKeywordOccurrences(text: string, keyword: string): number {
   return count;
 }
 
+const SKILL_ACRONYMS = new Set([
+  "ai", "ml", "rag", "nlp", "aws", "gcp", "api", "apis", "sql", "llm", "llms", "ocr", "dsa", "oop", "cv", "dl",
+  "ci/cd", "ui", "ux", "gcs", "iac", "html", "css", "sre", "qa",
+]);
+const SKILL_SPECIAL_CASING: Record<string, string> = {
+  genai: "GenAI", fastapi: "FastAPI", graphql: "GraphQL", javascript: "JavaScript", typescript: "TypeScript",
+  postgresql: "PostgreSQL", mongodb: "MongoDB", mysql: "MySQL", langchain: "LangChain", langgraph: "LangGraph",
+  pytorch: "PyTorch", rest: "REST",
+};
+
+/** Title-cases a skill while preserving acronyms (AI, RAG, NLP, AWS...) so "agentic ai" -> "Agentic AI". */
+export function formatSkillDisplay(skill: string): string {
+  const trimmed = (skill || "").trim();
+  if (!trimmed) return trimmed;
+  return trimmed
+    .split(/(\s+)/)
+    .map((tok) => {
+      if (!tok.trim()) return tok;
+      const low = tok.toLowerCase();
+      if (SKILL_SPECIAL_CASING[low]) return SKILL_SPECIAL_CASING[low];
+      if (SKILL_ACRONYMS.has(low)) return low.toUpperCase();
+      if (/^[A-Z0-9+#./&-]+$/.test(tok) && tok.length > 1 && /[A-Z]/.test(tok)) return tok;
+      return tok.charAt(0).toUpperCase() + tok.slice(1);
+    })
+    .join("");
+}
+
 const ARCHITECTURE_AND_DOMAIN = new Set([
   "microservices", "distributed systems", "pub/sub", "distributed state",
   "websocket", "webrtc", "rest", "graphql", "system design", "oop", "dsa",
@@ -449,7 +476,7 @@ export function extractRequirementsFromJobText(jobText: string): Requirement[] {
       }
 
       extracted.push({
-        keyword: canonical.toUpperCase() === canonical ? canonical : canonical.replace(/\b\w/g, (c) => c.toUpperCase()),
+        keyword: formatSkillDisplay(canonical),
         importance: occ >= 2 ? "required" : "preferred",
         jobEvidence: "Deterministically matched in Job Description",
         category,
