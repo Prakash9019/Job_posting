@@ -722,7 +722,14 @@ export function reframeBulletsToGoogleXYZ(
   for (let i = 0; i < bullets.length; i++) {
     const raw = bullets[i];
     const match = raw.match(BULLET_START_RE);
-    const content = match ? match[1].trim() : raw.trim();
+    let content = match ? match[1].trim() : raw.trim();
+
+    // Strip leading formatting tokens that might leak into content
+    content = content
+      .replace(/^(?:textbf|small)\s+/i, "")
+      .replace(/\[leftmargin=[^\]]*\]/g, "")
+      .replace(/(?:^|\s)-?\d+(?:\.\d+)?pt(?=\s|$)/g, "")
+      .trim();
 
     // Preserve company names and avoid modifying headings
     const isCompanyLine = companyNames.some((c) => c && content.toLowerCase().includes(c.toLowerCase()));
@@ -776,7 +783,11 @@ export function reframeBulletsToGoogleXYZ(
         /^(?:worked on developing|worked on building|worked on creating|worked on|responsible for leading|responsible for managing|responsible for|assisted with|assisted in|helped with|helped|handled|participated in)\s*/i,
         ""
       )
-      .replace(/^(?:architected|engineered|spearheaded|orchestrated|implemented|built|developed|created|streamlined|optimized|delivered|integrated|combined|consolidated|deployed|configured|refactored|migrated|centralized|modeled|maintained|analyzed|evaluated)\s*/i, "");
+      .replace(
+        /^(?:architected|engineered|spearheaded|orchestrated|implemented|built|developed|created|streamlined|optimized|delivered|integrated|combined|consolidated|deployed|configured|refactored|migrated|centralized|modeled|maintained|analyzed|evaluated|designed|launched|automated|pioneered|formulated|accelerated|standardized|scaled)\s*/i,
+        ""
+      )
+      .trim();
 
     let newContent = "";
     if (existingMetric) {
@@ -1531,8 +1542,15 @@ export function canonicalToPlainText(canonical: CanonicalResume): string {
 export function cleanAiText(text: string): string {
   if (!text) return "";
   let cleaned = sanitizeOcrText(text).trim();
-  // Strip leading escaped asterisk e.g. "\* Architected"
-  cleaned = cleaned.replace(/^\\\*\s*/, "");
+  // Strip leading stray artifacts (e.g. "small ", "textbf ", "[leftmargin=...]", dimensions)
+  cleaned = cleaned
+    .replace(/^\\?\*?\s*/, "")
+    .replace(/^\\(?:textbf|small)\b\s*/i, "")
+    .replace(/^(?:textbf|small)\s+/i, "")
+    .replace(/\[leftmargin=[^\]]*\]/g, "")
+    .replace(/\\210/g, "")
+    .replace(/(?:^|\s)-?\d+(?:\.\d+)?pt(?=\s|$)/g, "");
+
   // Loop to strip leading bullet characters like "• ", "* ", "- ", "∗ ", "– "
   while (
     /^[-•–—▪▫◦‣▸▹➢➣→+∗✔✓◆◇►⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]\s*/.test(cleaned) ||
@@ -1545,11 +1563,30 @@ export function cleanAiText(text: string): string {
       .replace(/^\\\*\s*/, "")
       .trim();
   }
-  // Collapse accidental double action verbs (e.g. "Architected Combined" or "Engineered Architected")
-  cleaned = cleaned.replace(
-    /^(Architected|Orchestrated|Engineered|Developed|Delivered|Implemented|Spearheaded)\s+(Synthesized|Devised|Engineered|Architected|Developed|Combined|Built|Launched|Implemented|Created|Integrated)\b/i,
-    "$1"
+
+  // Strip repeated stray formatting tokens
+  cleaned = cleaned
+    .replace(/^(?:textbf|small)\s+/i, "")
+    .replace(/\[leftmargin=[^\]]*\]/g, "")
+    .replace(/(?:^|\s)-?\d+(?:\.\d+)?pt(?=\s|$)/g, "");
+
+  // Collapse accidental double action verbs (e.g. "Architected Orchestrated", "Spearheaded Designed", "Architected small Architected")
+  const ACTION_VERBS_PATTERN =
+    "Architected|Orchestrated|Engineered|Spearheaded|Implemented|Streamlined|Optimized|Delivered|Developed|Designed|Synthesized|Devised|Built|Launched|Automated|Integrated|Formulated|Accelerated|Pioneered|Standardized|Scaled|Executed|Authored|Established|Reduced|Improved|Managed|Led|Directed|Constructed|Created|Produced|Published|Programmed|Resolved|Secured|Trained|Collaborated|Conducted|Achieved|Combined|Consolidated|Deployed|Configured|Refactored|Migrated|Centralized|Modeled|Maintained|Analyzed|Evaluated";
+
+  const doubleVerbRegex = new RegExp(
+    `^(${ACTION_VERBS_PATTERN})\\s+(?:small\\s+|and\\s+)?(${ACTION_VERBS_PATTERN})\\b`,
+    "i"
   );
+  let collapsePasses = 0;
+  while (doubleVerbRegex.test(cleaned) && collapsePasses < 5) {
+    cleaned = cleaned.replace(doubleVerbRegex, "$1");
+    collapsePasses++;
+  }
+
+  // Deduplicate overlapping AI pipeline phrasing
+  cleaned = cleaned.replace(/\b(a multi-stage (?:Agentic )?AI pipeline)\s+an? (?:Artificial Intelligence|Agentic AI) pipeline\b/gi, "$1");
+  cleaned = cleaned.replace(/\b(an? Artificial Intelligence pipeline)\s+an? (?:Artificial Intelligence|Agentic AI) pipeline\b/gi, "$1");
 
   // Polish gerund clauses to prevent redundant "and" usage (e.g. ", and reducing manual review time" -> ", while reducing...")
   cleaned = cleaned
@@ -1583,6 +1620,21 @@ export function formatDateRangeForLatex(raw?: string | null): string {
  * 2. Standalone bold subprojects (NO \item) with \vspace{3pt} before and \vspace{1pt} after
  * 3. Surgical spacing: \vspace{6pt} before sections, \vspace{4pt} before companies
  * 4. All bullets and subproject titles are run through cleanAiText() to strip raw markdown markers
+ */
+/**
+ * INVARIANT — \resumeSubheading argument order (enforced everywhere, never change):
+ *   #1 = Job Title  (bold, left,  Row 1)   — e.g. "Platform Engineer"
+ *   #2 = Location   (italic small, right, Row 1) — e.g. "India" or ""
+ *   #3 = Company    (small, left,  Row 2)   — e.g. "JulleyOnline Private Limited"
+ *   #4 = Date Range (italic small, right, Row 2) — e.g. "April 2026 -- September 2026"
+ *
+ * For EDUCATION the same macro is reused with:
+ *   #1 = Institution (bold, Row 1)  #2 = Location (Row 1 right)
+ *   #3 = Degree      (Row 2 left)   #4 = Date     (Row 2 right)
+ *
+ * The macro definition in the template must match:
+ *   \textbf{#1} & \textit{\small #2} \\[-1pt]
+ *   {\small #3} & \textit{\small #4}
  */
 export function generateLatexFromCanonical(
   resume: CanonicalResume,
@@ -1658,7 +1710,9 @@ export function generateLatexFromCanonical(
       const loc = cleanAiText(exp.location || "");
       const dateRange = formatDateRangeForLatex(exp.dateRange);
 
-      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
+      // Row 1: Job Title (bold, left) | Location (italic small, right)
+      // Row 2: Company Name (small, left) | Date Range (italic small, right)
+      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
 
       // Top-level bullets under company
       if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
@@ -1854,7 +1908,7 @@ export function generateLatexFromCanonical(
   \\vspace{3pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
-    \\textit{\\small #3} & \\textit{\\small #4}
+    {\\small #3} & \\textit{\\small #4}
   \\end{tabular*}\\nopagebreak[4]
 }
 

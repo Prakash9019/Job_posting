@@ -1018,6 +1018,14 @@ export function ensureAllHrefsPreservedInLatex(
     let modifiedHeader = headerText;
 
     const createdCategories = new Set<string>();
+    const tokenMatches = modifiedHeader.match(/XATSTOKEN(\d+)X/g) || [];
+    for (const tm of tokenMatches) {
+      const idx = parseInt(tm.replace(/\D/g, ""), 10);
+      const tokenStr = tokens[idx] || "";
+      if (tokenStr.includes("linkedin.com") || /linkedin/i.test(tokenStr)) createdCategories.add("linkedin");
+      if (tokenStr.includes("github.com") || /github/i.test(tokenStr)) createdCategories.add("github");
+      if (tokenStr.includes("mailto:") || /mailto:/i.test(tokenStr)) createdCategories.add("email");
+    }
     if (modifiedHeader.includes("linkedin.com") || /\\href\{[^}]*linkedin/i.test(modifiedHeader)) createdCategories.add("linkedin");
     if (modifiedHeader.includes("github.com") || /\\href\{[^}]*github/i.test(modifiedHeader)) createdCategories.add("github");
     if (modifiedHeader.includes("mailto:") || /\\href\{mailto:/i.test(modifiedHeader)) createdCategories.add("email");
@@ -1108,6 +1116,14 @@ export function ensureAllHrefsPreservedInLatex(
       let modifiedHeader = headerText;
 
       const createdCategories = new Set<string>();
+      const tokenMatches = modifiedHeader.match(/XATSTOKEN(\d+)X/g) || [];
+      for (const tm of tokenMatches) {
+        const idx = parseInt(tm.replace(/\D/g, ""), 10);
+        const tokenStr = tokens[idx] || "";
+        if (tokenStr.includes("linkedin.com") || /linkedin/i.test(tokenStr)) createdCategories.add("linkedin");
+        if (tokenStr.includes("github.com") || /github/i.test(tokenStr)) createdCategories.add("github");
+        if (tokenStr.includes("mailto:") || /mailto:/i.test(tokenStr)) createdCategories.add("email");
+      }
       if (modifiedHeader.includes("linkedin.com") || /\\href\{[^}]*linkedin/i.test(modifiedHeader)) createdCategories.add("linkedin");
       if (modifiedHeader.includes("github.com") || /\\href\{[^}]*github/i.test(modifiedHeader)) createdCategories.add("github");
       if (modifiedHeader.includes("mailto:") || /\\href\{mailto:/i.test(modifiedHeader)) createdCategories.add("email");

@@ -69,23 +69,26 @@ export async function POST(req: NextRequest) {
       } else {
         secondErrText = fallbackResponse ? await fallbackResponse.text().catch(() => "") : "";
 
-        // Tertiary fallback: compile clean standardized ATS LaTeX template from resumeText
-        const resumeContent = body?.resumeText || body?.markdownText;
-        if (resumeContent && typeof resumeContent === "string" && resumeContent.trim()) {
-          console.warn("Custom LaTeX failed to compile; attempting standard ATS template compilation fallback...");
-          try {
-            const standardLatex = generateATSLatex(resumeContent, { originalLatex: body?.originalLatex });
-            const safeStandardLatex = ensureAllHrefsPreservedInLatex(standardLatex, linkSources);
-            const stdRes = await compile("pdflatex", safeStandardLatex).catch(() => null);
-            if (stdRes && stdRes.ok && (stdRes.headers.get("content-type") || "").includes("pdf")) {
-              response = stdRes;
-              contentType = stdRes.headers.get("content-type") || "";
-            } else if (stdRes) {
-              const stdErrText = await stdRes.text().catch(() => "");
-              if (stdErrText) secondErrText = stdErrText;
-            }
-          } catch (stdErr) {
-            console.warn("Standard template fallback compilation error:", stdErr);
+        // Tertiary attempt: Auto-heal missing essential packages or escapes in user's custom LaTeX
+        let healedCode = latexCode;
+        if (healedCode.includes("\\href") && !healedCode.includes("{hyperref}")) {
+          healedCode = healedCode.replace("\\begin{document}", "\\usepackage[hidelinks]{hyperref}\n\\begin{document}");
+        }
+        if ((healedCode.includes("\\underline") || healedCode.includes("\\uline")) && !healedCode.includes("{ulem}")) {
+          healedCode = healedCode.replace("\\begin{document}", "\\usepackage[normalem]{ulem}\n\\begin{document}");
+        }
+        if (healedCode.includes("\\textbullet") && !healedCode.includes("{textcomp}")) {
+          healedCode = healedCode.replace("\\begin{document}", "\\usepackage{textcomp}\n\\begin{document}");
+        }
+        if (!healedCode.includes("\\raggedbottom") && healedCode.includes("\\begin{document}")) {
+          healedCode = healedCode.replace("\\begin{document}", "\\raggedbottom\n\\begin{document}");
+        }
+
+        if (healedCode !== latexCode) {
+          const healedRes = await compile("pdflatex", healedCode).catch(() => null);
+          if (healedRes && healedRes.ok && (healedRes.headers.get("content-type") || "").includes("pdf")) {
+            response = healedRes;
+            contentType = healedRes.headers.get("content-type") || "";
           }
         }
       }

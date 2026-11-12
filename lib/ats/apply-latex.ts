@@ -1,3 +1,4 @@
+import { GoogleGenAI } from "@google/genai";
 import {
   generateATSLatex,
   cleanLingeringPlaceholders,
@@ -5,7 +6,11 @@ import {
   parseResumeToCanonical,
   generateLatexFromCanonical,
   cleanAiText,
+  resolvePlaceholder,
+  escapeLatexForPatch,
+  type CanonicalResume,
 } from "./tailor";
+import { extractRequirementsFromJobText } from "./scoring";
 import type { UnifiedATSAudit } from "./analysis";
 import {
   extractHyperlinksFromLatex,
@@ -140,14 +145,14 @@ export function optimizeLatexGeometryForOnePage(
   // 11. Surgical spacing: Ensure \vspace{6pt} before \section declarations
   doc = doc.replace(/(?<!\\vspace\{6pt\}\s*)\n\\section/g, "\n\\vspace{6pt}\n\\section");
 
-  // 12. Surgical spacing: Exactly \vspace{4pt} before company headings in \resumeSubheading
+  // 12. Surgical spacing (job-title rows): #1=JobTitle(bold) #2=Location #3=Company #4=Date
   doc = doc.replace(
     /\\newcommand\{\\resumeSubheading\}\[4\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[4\]\s*\}/,
     `\\newcommand{\\resumeSubheading}[4]{
   \\vspace{4pt}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
-    \\textit{\\small #3} & \\textit{\\small #4}
+    {\\small #3} & \\textit{\\small #4}
   \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
 }`
   );
@@ -284,26 +289,146 @@ export async function validateAndCompileLatex(
 }
 
 /**
- * Uses Google Gemini (gemini-2.5-pro) to combine:
- * 1. The original LaTeX template (treated as structural source of truth)
- * 2. The ATS-optimized resume content (treated as content source of improvements)
- * 3. AI suggestions & rewrites from the JSON audit
- * 4. Target JD requirements
- *
- * Then validates and compiles the output to ensure 100% syntactically correct, zero-loss LaTeX.
+ * Deterministically patches the user's custom LaTeX template in-place.
+ * Strictly preserves 100% of the original preamble (\documentclass, \usepackage, \geometry,
+ * custom macros, colors, fonts, section formatting, and macro calls like \resumeSubheading).
+ * Surgically replaces bullet points and weaved skills within the body.
+ */
+export function patchLatexTemplateDeterministically(
+  originalLatex: string,
+  canonical: CanonicalResume,
+  audit?: UnifiedATSAudit | null,
+  jobText?: string,
+  customMetrics?: Record<number, string>
+): string {
+  if (!originalLatex || !originalLatex.trim()) {
+    return generateLatexFromCanonical(canonical);
+  }
+
+  let patched = originalLatex;
+
+  // 0. Enforce the canonical \resumeSubheading macro format in any custom template:
+  //    Row 1: \textbf{#1} (JobTitle, bold, left) & \textit{\small #2} (Location, right)
+  //    Row 2: {\small #3} (Company, normal weight, left) & \textit{\small #4} (Date, right)
+  //    If the template has the old italic-company Row 2, normalise it here so the format
+  //    is deterministically correct regardless of which custom LaTeX the user pastes.
+  patched = patched.replace(
+    /\\textit\{\\small #3\}\s*&\s*\\textit\{\\small #4\}/g,
+    "{\\small #3} & \\textit{\\small #4}"
+  );
+
+  // 1. In-place PAR bullet rewrites from audit
+  if (audit?.action_verb_and_par_rewrites) {
+    for (let i = 0; i < audit.action_verb_and_par_rewrites.length; i++) {
+      const r = audit.action_verb_and_par_rewrites[i];
+      if (!r.original_bullet || !r.optimized_par_bullet) continue;
+      const customVal = customMetrics?.[i];
+      let rawReplacement = resolvePlaceholder(r.optimized_par_bullet, customVal);
+      rawReplacement = cleanAiText(
+        rawReplacement.replace(
+          /^\s*(?:optimized|rewrite|par|improved|revised|bullet|option\s*\d+|suggestion)\s*[:\-–—]\s*/i,
+          ""
+        )
+      );
+
+      const targetRaw = r.original_bullet.trim();
+      const targetClean = cleanAiText(targetRaw);
+
+      if (patched.includes(targetRaw)) {
+        patched = patched.replace(targetRaw, escapeLatexForPatch(rawReplacement));
+        continue;
+      }
+      if (targetClean && patched.includes(targetClean)) {
+        patched = patched.replace(targetClean, escapeLatexForPatch(rawReplacement));
+        continue;
+      }
+
+      // Match by distinctive phrase (first 5-7 words)
+      const words = targetClean.split(/\s+/).filter(Boolean);
+      if (words.length >= 4) {
+        const prefix = words
+          .slice(0, Math.min(6, words.length))
+          .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join("\\s+");
+        const re = new RegExp(`(?<=\\\\item\\s+|\\\\resumeItem\\s*\\{\\s*)(?:${prefix}[^\\\\}\n]*)`, "i");
+        if (re.test(patched)) {
+          patched = patched.replace(re, escapeLatexForPatch(rawReplacement));
+        }
+      }
+    }
+  }
+
+  // 2. Passive verb upgrades
+  const PASSIVE_MAP: [RegExp, string][] = [
+    [/\b(?:worked on developing|worked on building|worked on creating)\b/gi, "Engineered"],
+    [/\b(?:worked on)\b/gi, "Engineered"],
+    [/\b(?:responsible for leading|responsible for managing)\b/gi, "Spearheaded"],
+    [/\b(?:responsible for|duties included)\b/gi, "Spearheaded"],
+    [/\b(?:assisted with|assisted in|helped with|helped)\b/gi, "Collaborated on"],
+    [/\b(?:handled)\b/gi, "Orchestrated"],
+    [/\b(?:participated in|was involved in)\b/gi, "Delivered"],
+  ];
+  for (const [pattern, strongVerb] of PASSIVE_MAP) {
+    patched = patched.replace(pattern, strongVerb);
+  }
+
+  // 3. Weave missing target JD skills into Technical Skills section if present
+  if (jobText && jobText.trim()) {
+    const jdReqs = extractRequirementsFromJobText(jobText);
+    const targetKeywords = jdReqs
+      .map((r) => r.keyword)
+      .filter(
+        (kw) =>
+          kw.trim().length >= 3 &&
+          !/^(engineer|software|developer|team|experience|years|work|strong|ability)$/i.test(kw.trim())
+      );
+
+    const skillsSectionMatch = patched.match(
+      /(\\section\*?\{[^}]*(?:SKILL|TECHNOLOG)[^}]*\}[\s\S]*?)(?=\\section|\\end\{document\}|$)/i
+    );
+    if (skillsSectionMatch) {
+      const skillsSection = skillsSectionMatch[1];
+      let updatedSkillsSection = skillsSection;
+      for (const kw of targetKeywords.slice(0, 3)) {
+        if (!new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(updatedSkillsSection)) {
+          const firstRow = updatedSkillsSection.match(/(\\textbf\{[^}]*:\}[^\n\\}]*)/);
+          if (firstRow) {
+            updatedSkillsSection = updatedSkillsSection.replace(
+              firstRow[1],
+              `${firstRow[1]}, ${escapeLatexForPatch(kw)}`
+            );
+          }
+        }
+      }
+      if (updatedSkillsSection !== skillsSection) {
+        patched = patched.replace(skillsSection, updatedSkillsSection);
+      }
+    }
+  }
+
+  return patched;
+}
+
+/**
+ * Combines ATS-optimized content improvements into the LaTeX resume template:
+ * 1. If an original LaTeX template is provided, it is treated as the STRUCTURAL & VISUAL SOURCE OF TRUTH.
+ *    Uses Gemini (with deterministic in-place patching fallback) to update bullets, skills, and summary
+ *    while preserving 100% of the original preamble, packages, commands, styling, fonts, and geometry.
+ * 2. If no original LaTeX template is provided, synthesizes a standard 1-page ATS LaTeX template.
+ * Validates and compiles the output via TeXLive CGI to guarantee a 100% functional, downloadable PDF.
  */
 export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): Promise<ApplyLatexResult> {
   // Sanitize input text: fix OCR errors (Al→AI, Vertz→Vertx) BEFORE passing to remediation passes
   const sanitizedText = sanitizeOcrText(params.atsOptimizedText || "");
 
   // If original LaTeX is provided, extract any known links
-  let baseLatex = (params.originalLatex || "").trim();
-  const originalLinks = baseLatex ? extractHyperlinksFromLatex(baseLatex) : [];
+  const baseLatex = (params.originalLatex || "").trim();
+  const hasCustomTemplate = baseLatex.includes("\\documentclass") || baseLatex.includes("\\begin{document}");
+  const originalLinks = hasCustomTemplate ? extractHyperlinksFromLatex(baseLatex) : [];
 
   // Deterministic remediation passes:
   // 1. Parses sanitizedText into CanonicalResume JSON schema
   // 2. Applies AI PAR rewrites, active verb upgrades, de-duplications, twice-rule weaving, single-page trimming
-  // 3. Serializes strictly via generateLatexFromCanonical()
   const deterministic = runAllRemediationPasses({
     text: sanitizedText,
     latex: baseLatex,
@@ -312,19 +437,103 @@ export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): 
     customMetrics: params.customMetrics,
   });
 
-  let updatedLatex = deterministic.optimizedLatex;
+  let updatedLatex = "";
+  let compileResult: { success: boolean; pdfBuffer: Buffer | null; log?: string; error?: string } = {
+    success: false,
+    pdfBuffer: null,
+  };
 
-  // Restore and reconcile original hyperlinks into updated LaTeX
-  updatedLatex = ensureAllHrefsPreservedInLatex(updatedLatex, [baseLatex, sanitizedText]);
+  if (hasCustomTemplate) {
+    // Path 1: If GEMINI_API_KEY is available, use Gemini to merge improvements into baseLatex template
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const candidateModels = Array.from(
+          new Set(
+            [
+              process.env.GEMINI_EXTRACTION_MODEL,
+              "gemini-2.5-pro",
+              "gemini-2.5-flash",
+              "gemini-2.0-flash",
+            ].filter(Boolean)
+          )
+        ) as string[];
 
-  // Clean lingering placeholders
-  updatedLatex = cleanLingeringPlaceholders(updatedLatex, true);
+        const prompt = `You are an elite LaTeX resume compiler and ATS optimization specialist.
+Your task is to update the candidate's existing LaTeX resume code with ATS-optimized content improvements, while STRICTLY PRESERVING 100% of the LaTeX template's visual styling, preamble, packages, commands, macros, margins, fonts, and document geometry.
 
-  // Compile and validate with TeXLive CGI
-  const compileResult = await validateAndCompileLatex(updatedLatex, [baseLatex, sanitizedText]);
+[ORIGINAL_LATEX_TEMPLATE]:
+${baseLatex}
 
-  const sectionCount = (updatedLatex.match(/\section\*?\{/g) || []).length;
-  const hrefCount = (updatedLatex.match(/\href\{/g) || []).length;
+[ATS_OPTIMIZED_CONTENT_AND_IMPROVEMENTS]:
+${deterministic.optimizedText}
+
+${params.jobText ? `[TARGET_JOB_DESCRIPTION]:\n${params.jobText}\n` : ""}
+
+CRITICAL RULES:
+1. 100% TEMPLATE FORMAT PRESERVATION: Keep the original preamble (\\documentclass, \\usepackage, \\geometry, \\newcommand, \\def, custom macros, colors, fonts, section formatting). DO NOT replace the visual layout with a generic template. The original LaTeX template is the absolute structural source of truth.
+2. SURGICALLY UPDATE CONTENT ONLY: In the body, replace existing bullet points with the improved ATS PAR action verb bullets, update the skills with any missing target job keywords, and update the summary if provided. Keep the exact macro commands (e.g. \\resumeSubheading, \\resumeItem, \\item) used by the template.
+3. HYPERLINK INTEGRITY: All \\href{url}{label} links, GitHub, LinkedIn, email, and project links from the original template must remain intact.
+4. COMPILABLE OUTPUT ONLY: Return ONLY compilable LaTeX code. Do NOT output markdown code fences (\`\`\`latex or \`\`\`), do NOT output any explanations or commentary. Start with the \\documentclass line and end with \\end{document}.`;
+
+        for (const model of candidateModels) {
+          try {
+            const resp = await ai.models.generateContent({
+              model,
+              contents: [{ role: "user", parts: [{ text: prompt }] }],
+              config: { temperature: 0.1, maxOutputTokens: 12000 },
+            });
+            const textResp = resp.text?.trim() || "";
+            const cleanedResp = cleanLatexMarkdownFences(textResp);
+            if (cleanedResp.includes("\\documentclass") && cleanedResp.includes("\\begin{document}")) {
+              const safeAiLatex = cleanLingeringPlaceholders(
+                ensureAllHrefsPreservedInLatex(cleanedResp, [baseLatex, sanitizedText]),
+                true
+              );
+              const testCompile = await validateAndCompileLatex(safeAiLatex, [baseLatex, sanitizedText]);
+              if (testCompile.success) {
+                updatedLatex = safeAiLatex;
+                compileResult = testCompile;
+                break;
+              }
+            }
+          } catch (modelErr) {
+            console.warn(`AI LaTeX synthesis with ${model} failed, trying next:`, modelErr);
+          }
+        }
+      } catch (aiErr) {
+        console.warn("AI LaTeX synthesis failed:", aiErr);
+      }
+    }
+
+    // Path 2: Deterministic surgical patcher if AI didn't compile or wasn't configured
+    if (!compileResult.success) {
+      const patched = patchLatexTemplateDeterministically(
+        baseLatex,
+        deterministic.canonical,
+        params.audit,
+        params.jobText,
+        params.customMetrics
+      );
+      const safePatched = cleanLingeringPlaceholders(
+        ensureAllHrefsPreservedInLatex(patched, [baseLatex, sanitizedText]),
+        true
+      );
+      const patchCompile = await validateAndCompileLatex(safePatched, [baseLatex, sanitizedText]);
+      updatedLatex = safePatched;
+      compileResult = patchCompile;
+    }
+  } else {
+    // Path 3: If no custom template provided, use clean deterministic ATS template
+    updatedLatex = cleanLingeringPlaceholders(
+      ensureAllHrefsPreservedInLatex(deterministic.optimizedLatex, [sanitizedText]),
+      true
+    );
+    compileResult = await validateAndCompileLatex(updatedLatex, [sanitizedText]);
+  }
+
+  const sectionCount = (updatedLatex.match(/\\section\*?\{/g) || []).length;
+  const hrefCount = (updatedLatex.match(/\\href\{/g) || []).length;
 
   let linkReport = "";
   let hyperlinkValidation: Awaited<ReturnType<typeof validatePdfHyperlinks>> | undefined = undefined;

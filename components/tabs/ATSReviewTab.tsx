@@ -1054,6 +1054,10 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                   reader.onload = (event) => {
                     const content = String(event.target?.result || "");
                     setPreviousLatex(content);
+                    if (!improvedLatex || improvedLatex === previousLatex) {
+                      setImprovedLatex(content);
+                    }
+                    setCompiledPdfUrl(null);
                     const plain = latexToPlainText(content);
                     setText(plain);
                     setOriginalText(plain);
@@ -1130,11 +1134,13 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                       const content = String(event.target?.result || "");
                       setPreviousLatex(content);
                       handleSaveLatexTemplate(content);
-                      if (!text) {
-                        const plain = latexToPlainText(content);
-                        setText(plain);
-                        setOriginalText(plain);
+                      setCompiledPdfUrl(null);
+                      if (!improvedLatex || improvedLatex === previousLatex) {
+                        setImprovedLatex(content);
                       }
+                      const plain = latexToPlainText(content);
+                      setText(plain);
+                      setOriginalText(plain);
                     };
                     reader.readAsText(file);
                   }
@@ -1179,7 +1185,11 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
               const val = e.target.value;
               setPreviousLatex(val);
               handleSaveLatexTemplate(val);
-              if (!text && val.trim()) {
+              setCompiledPdfUrl(null);
+              if (!improvedLatex || improvedLatex === previousLatex) {
+                setImprovedLatex(val);
+              }
+              if (val.trim()) {
                 const plain = latexToPlainText(val);
                 setText(plain);
                 setOriginalText(plain);
@@ -2431,11 +2441,13 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                           reader.onload = (event) => {
                             const content = String(event.target?.result || "");
                             setPreviousLatex(content);
-                            if (!text) {
-                              const plain = latexToPlainText(content);
-                              setText(plain);
-                              setOriginalText(plain);
+                            setCompiledPdfUrl(null);
+                            if (!improvedLatex || improvedLatex === previousLatex) {
+                              setImprovedLatex(content);
                             }
+                            const plain = latexToPlainText(content);
+                            setText(plain);
+                            setOriginalText(plain);
                           };
                           reader.readAsText(file);
                         }
@@ -2471,7 +2483,10 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                     const newLatex = e.target.value;
                     setPreviousLatex(newLatex);
                     setCompiledPdfUrl(null);
-                    if (!text && newLatex.trim()) {
+                    if (!improvedLatex || improvedLatex === previousLatex) {
+                      setImprovedLatex(newLatex);
+                    }
+                    if (newLatex.trim()) {
                       const plain = latexToPlainText(newLatex);
                       setText(plain);
                       setOriginalText(plain);
@@ -2520,8 +2535,9 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                       <button
                         type="button"
                         onClick={() => {
-                          if (!compiledPdfUrl && !compilingPdf) {
-                            downloadCompiledLatexPDF(improvedLatex || previousLatex || generateATSLatex(text), { previewOnly: true });
+                          const codeToCompile = improvedLatex || previousLatex || generateATSLatex(text);
+                          if (!compiledPdfUrl || compiledPdfSourceRef.current !== codeToCompile) {
+                            downloadCompiledLatexPDF(codeToCompile, { previewOnly: true });
                           } else {
                             setRightPanelView("pdf");
                           }
@@ -2543,14 +2559,15 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                       type="button"
                       disabled={compilingPdf || applyingLatex || !(improvedLatex || previousLatex)}
                       onClick={() => {
-                        if (compiledPdfUrl) {
+                        const codeToCompile = improvedLatex || previousLatex || generateATSLatex(text);
+                        if (compiledPdfUrl && compiledPdfSourceRef.current === codeToCompile) {
                           const a = document.createElement("a");
                           a.href = compiledPdfUrl;
                           a.download = getCandidateFilename(text, effectiveCompany, "pdf");
                           a.click();
                           return;
                         }
-                        downloadCompiledLatexPDF(improvedLatex || previousLatex || generateATSLatex(text));
+                        downloadCompiledLatexPDF(codeToCompile);
                       }}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 disabled:opacity-50 text-slate-950 font-black text-xs shadow-md shadow-emerald-500/20 transition-all cursor-pointer"
                       title="Compiles or downloads ATS-Safe PDF with clickable \href links"
