@@ -70,8 +70,11 @@ export async function validatePdfArtifact(
   }
 
   if (opts.expectedUrls && opts.expectedUrls.length > 0 && reasons.length === 0) {
-    const links = await validatePdfHyperlinks(buf, opts.expectedUrls);
-    if (!links.valid) reasons.push(`missing clickable links: ${links.missingUrls.join(", ")}`);
+    const webUrls = opts.expectedUrls.filter((u) => u && !u.toLowerCase().startsWith("tel:"));
+    if (webUrls.length > 0) {
+      const links = await validatePdfHyperlinks(buf, webUrls);
+      if (!links.valid) reasons.push(`missing clickable links: ${links.missingUrls.join(", ")}`);
+    }
   }
 
   return { ok: reasons.length === 0, reasons, pages, size: buf.length, sha256 };
@@ -95,8 +98,26 @@ export async function compileValidatedPdf(
     return { ok: false, reasons: [`compiler threw: ${err instanceof Error ? err.message : String(err)}`], latex };
   }
   if (!buffer) return { ok: false, reasons: ["LaTeX compilation failed or the compiler was unavailable"], latex };
-  const v = await validatePdfArtifact(buffer, opts);
-  return v.ok ? { ok: true, buffer, sha256: v.sha256, pages: v.pages, latex } : { ok: false, reasons: v.reasons, latex };
+  let v = await validatePdfArtifact(buffer, opts);
+  let effectiveLatex = latex;
+
+  // Single-page enforcement: if multi-page but content reasonably fits on 1 page
+  if (v.ok && v.pages > 1 && opts.expectedText && opts.expectedText.length >= 100) {
+    try {
+      const singleLatex = generateATSLatex(opts.expectedText);
+      const singleBuf = await (opts.compile ?? compileLatexToPdfBuffer)(singleLatex, opts.linkSource);
+      if (singleBuf) {
+        const singleVal = await validatePdfArtifact(singleBuf, opts);
+        if (singleVal.ok && singleVal.pages === 1) {
+          buffer = singleBuf;
+          v = singleVal;
+          effectiveLatex = singleLatex;
+        }
+      }
+    } catch {}
+  }
+
+  return v.ok ? { ok: true, buffer, sha256: v.sha256, pages: v.pages, latex: effectiveLatex } : { ok: false, reasons: v.reasons, latex };
 }
 
 /** Screenshot transcript -> validated ATS PDF. Never returns anything but a validated PDF or a failure. */

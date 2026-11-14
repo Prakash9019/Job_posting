@@ -112,18 +112,13 @@ Certifications
   // --- 4. Test Single-Page Content Trimming Fallback ---
   console.log("\n--- 4. Testing Single-Page Content Trimming Fallback ---");
   const canonical = parseResumeToCanonical(sampleResume);
-  // Add extra bullets to create an overflowing resume
-  canonical.experience[0].bullets.push(
-    "Bullet 1 of extra content to test single page trimming behavior.",
-    "Bullet 2 of extra content to test single page trimming behavior.",
-    "Bullet 3 of extra content to test single page trimming behavior.",
-    "Bullet 4 of extra content to test single page trimming behavior."
-  );
-  canonical.experience[1].bullets.push(
-    "Older role extra bullet 1 to test trimming.",
-    "Older role extra bullet 2 to test trimming.",
-    "Older role extra bullet 3 to test trimming."
-  );
+  // Add extra bullets to create an overflowing resume (> 64.5 line budget)
+  for (let i = 1; i <= 15; i++) {
+    canonical.experience[0].bullets.push(`Bullet ${i} of extra technical content describing detailed architecture, infrastructure pipelines, and production deployments across distributed clusters.`);
+  }
+  for (let i = 1; i <= 10; i++) {
+    canonical.experience[1].bullets.push(`Older role extra bullet ${i} describing legacy workflows, API endpoints, and maintenance across platform services.`);
+  }
 
   const trimResult = trimContentForSinglePage(canonical);
   console.log(`✓ Trimmed ${trimResult.trimmedCount} lowest-weighted bullets from older experience`);

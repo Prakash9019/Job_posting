@@ -1,5 +1,12 @@
+import dns from "node:dns";
+try { dns.setDefaultResultOrder("ipv4first"); } catch {}
+try {
+  const { setGlobalDispatcher, Agent } = require("undici");
+  setGlobalDispatcher(new Agent({ connect: { timeout: 45_000 }, headersTimeout: 45_000, bodyTimeout: 45_000 }));
+} catch {}
 import { NextRequest, NextResponse } from "next/server";
 import { getCandidateFilename, generateATSLatex } from "@/lib/ats/tailor";
+import { optimizeLatexGeometryForOnePage } from "@/lib/ats/apply-latex";
 import { requireUser, AuthError } from "@/lib/auth/authorization";
 import { validatePdfArtifact } from "@/lib/ats/pdf-artifact";
 import {
@@ -24,6 +31,7 @@ export async function POST(req: NextRequest) {
 
     const linkSources = [body?.originalLatex, body?.resumeText, body?.markdownText].filter(Boolean) as string[];
     let latexCode = ensureAllHrefsPreservedInLatex(rawLatexCode, linkSources);
+    latexCode = optimizeLatexGeometryForOnePage(latexCode);
     // Ensure pdfgentounicode is safely guarded for engines like XeTeX
     latexCode = latexCode.replace(/\\pdfgentounicode\s*=\s*1/g, "\\ifdefined\\pdfgentounicode \\pdfgentounicode=1 \\fi");
 
@@ -34,20 +42,28 @@ export async function POST(req: NextRequest) {
         : getCandidateFilename(latexCode, body?.companyName || body?.jobText));
 
     async function compile(engine: string, code: string) {
-      const formData = new FormData();
-      formData.append("filecontents[]", code);
-      formData.append("filename[]", "document.tex");
-      formData.append("engine", engine);
-      formData.append("return", "pdf");
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const formData = new FormData();
+          formData.append("filecontents[]", code);
+          formData.append("filename[]", "document.tex");
+          formData.append("engine", engine);
+          formData.append("return", "pdf");
 
-      return fetch("https://texlive.net/cgi-bin/latexcgi", {
-        method: "POST",
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-        body: formData,
-        signal: AbortSignal.timeout(25000), // 25 sec timeout for reliable external TeXLive compilation
-      });
+          return await fetch("https://texlive.net/cgi-bin/latexcgi", {
+            method: "POST",
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
+            body: formData,
+            signal: AbortSignal.timeout(30000), // 30 sec timeout
+          });
+        } catch (err) {
+          if (attempt === 3) throw err;
+          await new Promise((r) => setTimeout(r, 750 * attempt));
+        }
+      }
+      return null;
     }
 
     // First attempt with pdflatex
@@ -113,16 +129,47 @@ export async function POST(req: NextRequest) {
     }
 
     const pdfArrayBuf = await response.arrayBuffer();
-    const pdfBuffer = Buffer.from(pdfArrayBuf);
+    let pdfBuffer = Buffer.from(pdfArrayBuf);
 
     // Never serve bytes that are not a complete, parseable PDF
-    const structure = await validatePdfArtifact(pdfBuffer);
+    let structure = await validatePdfArtifact(pdfBuffer);
     if (!structure.ok) {
       console.error("[LaTeX PDF Route] Compiler returned an invalid PDF:", structure.reasons);
       return NextResponse.json(
         { error: "LaTeX compilation produced an invalid PDF", log: structure.reasons.join("; ") },
         { status: 422 }
       );
+    }
+
+    // Strict 1-Page Guarantee: if compiled PDF produced > 1 page, re-compile with single-page ATS layout
+    if (structure.pages > 1) {
+      try {
+        let textToUse = body?.resumeText;
+        if (!textToUse) {
+          const { PDFParse } = await import("pdf-parse");
+          const parser = new PDFParse({ data: pdfBuffer });
+          const parsed = await parser.getText();
+          await parser.destroy().catch(() => {});
+          textToUse = parsed.text;
+        }
+
+        if (textToUse && textToUse.length >= 100) {
+          const singleLatex = generateATSLatex(textToUse);
+          const safeSingleLatex = ensureAllHrefsPreservedInLatex(singleLatex, linkSources);
+          const singleRes = await compile("pdflatex", safeSingleLatex).catch(() => null);
+          if (singleRes && singleRes.ok && (singleRes.headers.get("content-type") || "").includes("pdf")) {
+            const singleBuf = Buffer.from(await singleRes.arrayBuffer());
+            const singleStruct = await validatePdfArtifact(singleBuf);
+            if (singleStruct.ok && singleStruct.pages === 1) {
+              pdfBuffer = singleBuf;
+              structure = singleStruct;
+              latexCode = safeSingleLatex;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Single-page fallback failed in latex-pdf route:", err);
+      }
     }
 
     // Validate compiled PDF hyperlink annotations across all source links

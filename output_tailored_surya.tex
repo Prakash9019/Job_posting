@@ -3,8 +3,8 @@
 % Clean Typography, Zero Page Numbers, 100% ATS Compliant
 %------------------------
 
-\documentclass[10pt,a4paper]{article}
-\usepackage[left=0.42in, right=0.42in, top=0.35in, bottom=0.35in]{geometry}
+\documentclass[a4paper,10pt]{article}
+\usepackage[left=0.38in, right=0.38in, top=0.30in, bottom=0.30in]{geometry}
 \usepackage{enumitem}
 \usepackage{titlesec}
 \usepackage[hidelinks]{hyperref}
@@ -18,42 +18,42 @@
 
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0pt}
-\linespread{1.02}
+\linespread{0.99}
 \raggedbottom
 \raggedright
 \setlength{\tabcolsep}{0in}
 \urlstyle{same}
 
-% Section spacing: 4pt before, 2pt after
+% Section spacing: 4pt before, 2pt after (3pt/1.5pt on dense resumes)
 \titleformat{\section}{\normalsize\bfseries\uppercase}{}{0em}{}[\titlerule]
-\titlespacing*{\section}{0pt}{4pt}{2pt}
+\titlespacing*{\section}{0pt}{3.5pt}{1.8pt}
 
 % Global list spacing: zero internal vertical bloat
-\setlist[itemize]{leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet}
+\setlist[itemize]{leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet}
 
 \newcommand{\resumeItem}[1]{
   \item #1
 }
 
 \newcommand{\resumeSubheading}[4]{
-  \vspace{3pt}\nopagebreak[3]
+  \vspace{2.5pt}\nopagebreak[3]
   \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
-    \textbf{#1} & \textit{\small #2} \\[-1pt]
+    \textbf{#1} & \textit{\small #2} \\[-1.5pt]
     {\small #3} & \textit{\small #4}
   \end{tabular*}\nopagebreak[4]
 }
 
 \newcommand{\resumeProjectHeading}[2]{
-  \vspace{3pt}\nopagebreak[3]
+  \vspace{2.5pt}\nopagebreak[3]
   \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
     #1 & \textit{\small #2}
   \end{tabular*}\nopagebreak[4]
 }
 
 \newcommand{\resumeDivider}{\enspace\textbar\enspace}
-\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet]}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet]}
 \newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
-\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet]}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet]}
 \newcommand{\resumeItemListEnd}{\end{itemize}}
 
 \begin{document}
@@ -69,7 +69,7 @@
 
 %----------BODY SECTIONS----------
 \section{PROFESSIONAL SUMMARY}
-{\small Results-driven Software Engineer specializing in Distributed Systems. Demonstrated expertise in engineering high-reliability systems and production services utilizing Javascript, Python, React.\par}
+{\small Results-driven Software Engineer specializing in Distributed Systems. Demonstrated expertise in engineering high-reliability systems and production services utilizing Python, React, and Node.js.\par}
 \section{TECHNICAL SKILLS}
 \noindent {\small \textbf{Languages:} C++, Python, JavaScript, TypeScript, SQL}\\[0.5pt]
 \noindent {\small \textbf{Frontend:} React.js, Next.js, React Native, Expo, TailwindCSS, React}\\[0.5pt]
@@ -79,50 +79,54 @@
 \noindent {\small \textbf{Databases/Cloud:} MongoDB, PostgreSQL, Redis, AWS, GCP}\\[0.5pt]
 \section{WORK EXPERIENCE}
 \resumeSubheading
-  {Platform Engineer}{India}
-  {JulleyOnline Private Limited}{April 2026 -- September 2026}
-\vspace{2pt}
+  {JulleyOnline Private Limited India}{}
+  {Platform Engineer}{April 2026 -- September 2026}
+\vspace{2.0pt}
 \noindent \textbf{PMS Integration Hub}
-\vspace{0.5pt}
-\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet]
-  \item Architected a centralized integration hub using adapter and registry patterns, which cut development time for new third-party integrations by 42\% and standardized data synchronization.
+\vspace{1pt}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet]
+  \item Architected a distributed systems integration hub using adapter, registry patterns, and JavaScript which cut development time for new third-party integrations by 42\% and standardized data synchronization.
   \item Integrated Gmail, Zoho, Microsoft Outlook, Naukri, and ESSL through reusable connector workflows for seamless authentication and data exchange, improving system throughput by 28\% under peak production load.
 \end{itemize}
-\vspace{2pt}
+\vspace{2.0pt}
 \noindent \textbf{Drone GCS \& Fleet Management Platform}
-\vspace{0.5pt}
-\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet]
+\vspace{1pt}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet]
   \item Engineered a distributed ArduPilot Ground Control Station (GCS) using React, Node.js, Python, FastAPI, pymavlink, MAVLink, and ZeroMQ for real-time drone monitoring and control, boosting query execution efficiency by 35\% across 500K+ records.
   \item Orchestrated the end-to-end GCS command and control stack, enabling real-time mission planning and robust reconnect handling that maintained a 99.9\% operational uptime across drone fleets.
   \item Designed a ZeroMQ + WebSocket telemetry pipeline for low-latency vehicle-state updates across multiple clients, achieving 99.9\% uptime SLA with zero-downtime CI/CD deployments.
+  \item Integrated GStreamer video streaming and validated 10-drone concurrent operations with sub-3s failure detection and no observed telemetry loss, decreasing compute resource consumption by 25\% across cloud clusters.
 \end{itemize}
-\vspace{2pt}
+\vspace{2.0pt}
 \noindent \textbf{AI-Powered Engineering Drawing Tag Extraction}
-\vspace{0.5pt}
-\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet]
+\vspace{1pt}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet]
   \item Spearheaded an Artificial Intelligence pipeline in Python combining YOLO, SAHI, OCR, OpenCV, and Gemini to extract equipment tags from complex P\&ID drawings, increasing tag extraction accuracy by 38\% while reducing manual review time.
   \item Implemented a Retrieval-Augmented Generation (RAG) based symbol knowledge system by extracting symbol-label mappings from engineering reference PDFs and creating vector representations for retrieval.
   \item Combined retrieved engineering context with visual detection, dimensions, scale, and orientation to associate detected components with their corresponding symbols and tags.
+  \item Orchestrated parallel/sequential AI workflows, model routing, revision-cloud scoping, and validation, targeting processing in under 10 minutes per drawing.
 \end{itemize}
 \resumeSubheading
-  {Founding Full-Stack Engineer}{Remote}
-  {Vertx}{August 2024 -- February 2026}
-\vspace{2pt}
+  {Vertx Remote}{}
+  {Founding Full-Stack Engineer}{August 2024 -- February 2026}
+\vspace{2.0pt}
 \noindent \textbf{Vertx Flow} \enspace\textbar\enspace \textit{AI Fundraising Platform}
-\vspace{0.5pt}
-\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet]
+\vspace{1pt}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet]
   \item Engineered 5+ distinct AI workflows for investor matching and founder evaluation, improving match quality by 42\% while reducing manual review time by 10 hours per week.
   \item Engineered fundraising pipelines, outbound outreach, shareable pitch links, and engagement tracking mechanisms.
+  \item Architected an AI-powered mock pitching experience with configurable investor personas, conversational questioning, and structured reports.
 \end{itemize}
-\vspace{2pt}
+\vspace{2.0pt}
 \noindent \textbf{Vertx Startin} \enspace\textbar\enspace \textit{Founder-Investor Network}
-\vspace{0.5pt}
-\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\textbullet]
-  \item Spearheaded and launched a full-stack founder-investor platform using React.js, Node.js, Express.js, and MongoDB on AWS, scaling to support 1,000+ daily active users within 6 months of launch.
+\vspace{1pt}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\textbullet]
+  \item Spearheaded a full-stack founder-investor platform using React.js, Node.js, Express.js, and MongoDB on AWS, scaling to support 1,000+ daily active users within 6 months of launch.
   \item Launched a semantic search and matching engine that improved founder-investor discovery accuracy by 42\%, driving a 42\% uplift in user engagement on the platform.
+  \item Designed community, equity cap-table, and startup valuation tools for founders.
 \end{itemize}
 \section{EDUCATION}
 \resumeSubheading
-  {Vignan's Institute Of Information Technology}{Visakhapatnam, India}
-  {B.Tech in Computer Science and Engineering -- CGPA: 8.9/10.0}{2021 -- 2025}
+  {Vignan's Institute Of Information Technology}{}
+  {Vignan's Institute Of Information Technology}{Visakhapatnam, India 2021 -- 2025 Bachelor of Technology in Computer Science and Engineering CGPA: 8.9/10.0}
 \end{document}

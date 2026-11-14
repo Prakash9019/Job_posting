@@ -25,7 +25,9 @@ async function testPipeline() {
   console.log("🧪 VERIFYING SURYA PRAKASH TAILORED RESUME (END-TO-END)");
   console.log("==============================================================\n");
 
-  const origPdfBuf = fs.readFileSync("./uploads/resumes/user_a/1792158353361-Resume_Loka_Surya_Prakash.pdf");
+  const files = fs.readdirSync("./uploads/resumes/user_a");
+  const targetFile = files.find((f) => f.includes("Resume_Loka_Surya_Prakash") && f.endsWith(".pdf")) || files[0];
+  const origPdfBuf = fs.readFileSync(`./uploads/resumes/user_a/${targetFile}`);
   const parser = new PDFParse({ data: origPdfBuf });
   const resumeText = (await parser.getText()).text;
 

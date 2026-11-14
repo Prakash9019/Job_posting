@@ -361,7 +361,7 @@ export async function generateTargetedColdEmail(params: {
   const p2 = `At Julley Online Private Limited, I ${ach1.description}, ${ach1.metric}. Additionally, at Vertx, I ${ach2.description}, ${ach2.metric}. Both platforms required rigorous focus on high availability, low latency, and robust data pipelines.`;
 
   // Paragraph 3: CTA & Links (37 words)
-  const p3 = `Please find my resume attached (${attachmentFilename}) for your review. You can also explore my open-source work on GitHub (${githubUrl}) and connect on LinkedIn (${linkedinUrl}). I look forward to speaking with your team.`;
+  const p3 = `Please find the attached resume. You can also explore my open-source work on GitHub (${githubUrl}) and connect on LinkedIn (${linkedinUrl}). I look forward to speaking with your team.`;
 
   // Closing: Clean Sign-off (5 words)
   const closing = `Best regards,\n${candidateDisplayName}`;

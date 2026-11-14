@@ -55,7 +55,7 @@ export interface ApplyLatexResult {
  */
 export function optimizeLatexGeometryForOnePage(
   latex: string,
-  contentStats?: { words: number; lines: number }
+  contentStats?: { words?: number; lines?: number; estimatedLines?: number }
 ): string {
   if (!latex || !latex.includes("\\documentclass")) return latex;
 
@@ -65,35 +65,53 @@ export function optimizeLatexGeometryForOnePage(
   doc = doc.replace(/\\item\s*[*∗]\s*/g, "\\item ");
   doc = doc.replace(/\\resumeItem\{\s*[*∗]\s*/g, "\\resumeItem{");
 
-  // 2. Count content words and lines if not provided
-  const words = contentStats?.words ?? doc.replace(/\\begin\{document\}[\s\S]*?\\end\{document\}/, "").split(/\s+/).length;
-  const lines = contentStats?.lines ?? (doc.match(/\\resumeItem|\\item|\\section|\\resumeSubheading/g) || []).length;
+  // 2. Count content words and lines from document body if not provided
+  const bodyMatch = doc.match(/\\begin\{document\}([\s\S]*?)\\end\{document\}/);
+  const bodyText = bodyMatch ? bodyMatch[1] : doc;
+  const cleanBody = bodyText.replace(/\\[a-zA-Z]+(\[[^\]]*\])?(?:\{([^{}]*)\})?/g, " ");
+  const words = contentStats?.words ?? cleanBody.split(/\s+/).filter(Boolean).length;
+  const lines = contentStats?.estimatedLines ?? contentStats?.lines ?? (bodyText.match(/\\resumeItem|\\item|\\section|\\resumeSubheading|\\resumeProjectHeading/g) || []).length;
 
-  // Keep multi-page geometry if content is extensive (>850 words / >72 lines)
-  if (words > 850 || lines > 72) {
+  // Keep multi-page geometry if content is extensive (>850 words / >88 lines)
+  if (words > 850 || lines > 88) {
     return doc;
   }
 
-  // 3. Dynamic 1-page parameter selection with zero-out bullet spacing and surgical boundary spacing:
-  // - Base font size: 10pt standard
-  // - itemsep: 0.5pt near zero (no over-expansion onto page 2)
-  // - linespread: 1.02
-  // - Safe margins: 0.42in left/right, 0.35in top/bottom
-  // - Surgical spacing: 4pt before sections, 3pt before companies, 2pt before subprojects
+  // Normalize paper dimensions to A4 across all templates and strip conflicting margin packages
+  doc = doc.replace(/\b(?:letter|letterpaper|legal|legalpaper)\b/gi, "a4paper");
+  doc = doc.replace(/\\usepackage(?:\[[^\]]*\])?\{fullpage\}/g, "");
+  doc = doc.replace(/\\addtolength\{\\(?:oddsidemargin|evensidemargin|textwidth|topmargin|textheight)\}\{[^}]*\}/g, "");
+
+  // 3. Dynamic 1-page parameter selection with zero-out bullet spacing and calibrated boundary spacing
   let targetClass = "\\documentclass[10pt,a4paper]{article}";
-  let targetGeometry = "\\usepackage[left=0.42in, right=0.42in, top=0.35in, bottom=0.35in]{geometry}";
-  let targetSpacing = "\\titlespacing*{\\section}{0pt}{4pt}{2pt}";
+  let targetGeometry = "\\usepackage[left=0.38in, right=0.38in, top=0.30in, bottom=0.30in]{geometry}";
+  let targetSpacing = "\\titlespacing*{\\section}{0pt}{3.5pt}{1.8pt}";
   let targetSetlist =
-    "\\setlist[itemize]{leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet}";
+    "\\setlist[itemize]{leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\\textbullet}";
+  let targetLinespread = "0.99";
+  let subheadingVspace = "2.5pt";
+  let subprojectVspace = "2.0pt";
 
   if (words < 450 && lines < 45) {
-    // Low/medium density single-page resume: expand base font to 10.5pt
-    targetClass = "\\documentclass[10.5pt,a4paper]{extarticle}";
-    targetGeometry = "\\usepackage[left=0.45in, right=0.45in, top=0.4in, bottom=0.4in]{geometry}";
-  } else {
-    // Standard and high density
-    targetClass = words > 650 || lines > 58 ? "\\documentclass[9.5pt,a4paper]{extarticle}" : "\\documentclass[10pt,a4paper]{article}";
-    targetGeometry = "\\usepackage[left=0.42in, right=0.42in, top=0.35in, bottom=0.35in]{geometry}";
+    // Low/medium density single-page resume: decompress spacing to fill page comfortably
+    targetClass = "\\documentclass[10pt,a4paper]{article}";
+    targetGeometry = "\\usepackage[left=0.5in, right=0.5in, top=0.5in, bottom=0.5in]{geometry}";
+    targetSpacing = "\\titlespacing*{\\section}{0pt}{6pt}{2pt}";
+    targetSetlist =
+      "\\setlist[itemize]{leftmargin=1.2em, itemsep=1pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet}";
+    targetLinespread = "1.15";
+    subheadingVspace = "4pt";
+    subprojectVspace = "3pt";
+  } else if (words > 650 || lines > 64) {
+    // Ultra-dense single-page resume
+    targetClass = "\\documentclass[9pt,a4paper]{extarticle}";
+    targetGeometry = "\\usepackage[left=0.34in, right=0.34in, top=0.22in, bottom=0.22in]{geometry}";
+    targetSpacing = "\\titlespacing*{\\section}{0pt}{2pt}{1pt}";
+    targetSetlist =
+      "\\setlist[itemize]{leftmargin=1.2em, itemsep=0pt, parsep=0pt, topsep=0.5pt, partopsep=0pt, label=\\textbullet}";
+    targetLinespread = "0.95";
+    subheadingVspace = "0.5pt";
+    subprojectVspace = "1.0pt";
   }
 
   // 4. Inject or replace documentclass
@@ -120,11 +138,11 @@ export function optimizeLatexGeometryForOnePage(
     doc = doc.replace("\\begin{document}", `${targetSetlist}\n\\begin{document}`);
   }
 
-  // 8. Ensure readable line spacing (\linespread{1.02})
+  // 8. Ensure readable line spacing
   if (doc.includes("\\linespread")) {
-    doc = doc.replace(/\\linespread\{[^}]*\}/g, "\\linespread{1.02}");
+    doc = doc.replace(/\\linespread\{[^}]*\}/g, `\\linespread{${targetLinespread}}`);
   } else if (doc.includes("\\begin{document}")) {
-    doc = doc.replace("\\begin{document}", "\\linespread{1.02}\n\\begin{document}");
+    doc = doc.replace("\\begin{document}", `\\linespread{${targetLinespread}}\n\\begin{document}`);
   }
 
   // 9. Re-add \raggedbottom to preamble so LaTeX does NOT mathematically stretch the page and over-expand text
@@ -132,44 +150,88 @@ export function optimizeLatexGeometryForOnePage(
     doc = doc.replace("\\begin{document}", "\\raggedbottom\n\\begin{document}");
   }
 
-  // 10. Replace any itemize parameters with exact near-zero intra-bullet spacing
-  doc = doc.replace(/\\begin\{itemize\}(?:\[[^\]]*\])?/g, "\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]");
+  // 10. Replace itemize macro definitions FIRST before touching body \begin{itemize}
+  const itemsepVal = words < 450 && lines < 45 ? "1pt" : "0.6pt";
+  const topsepVal = words < 450 && lines < 45 ? "1pt" : "1.0pt";
   doc = doc.replace(
-    /\\newcommand\{\\resumeItemListStart\}\{[^}]*\}/,
-    "\\newcommand{\\resumeItemListStart}{\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]}"
+    /\\newcommand\{\\resumeItemListStart\}[^\n]*\n?/,
+    `\\newcommand{\\resumeItemListStart}{\\begin{itemize}[leftmargin=1.2em, itemsep=${itemsepVal}, parsep=0pt, topsep=${topsepVal}, partopsep=0pt, label=\\textbullet]}\n`
+  );
+  doc = doc.replace(
+    /\\newcommand\{\\resumeSubHeadingListStart\}[^\n]*\n?/,
+    `\\newcommand{\\resumeSubHeadingListStart}{}\n`
+  );
+  doc = doc.replace(
+    /\\newcommand\{\\resumeSubHeadingListEnd\}[^\n]*\n?/,
+    `\\newcommand{\\resumeSubHeadingListEnd}{}\n`
+  );
+  doc = doc.replace(
+    /\\newcommand\{\\resumeItemListEnd\}[^\n]*\n?/,
+    `\\newcommand{\\resumeItemListEnd}{\\end{itemize}}\n`
+  );
+
+  // Now replace body \begin{itemize} safely
+  doc = doc.replace(
+    /(?<!\\newcommand\{[a-zA-Z]+\}\{)\\begin\{itemize\}(?:\[[^\]]*\])?/g,
+    `\\begin{itemize}[leftmargin=1.2em, itemsep=${itemsepVal}, parsep=0pt, topsep=${topsepVal}, partopsep=0pt, label=\\textbullet]`
   );
 
   // 11. Clean any C++ math mode
   doc = doc.replace(/\$C\+\+\$/g, "C++").replace(/\\\$C\+\+\\\$/g, "C++");
 
-  // 11. Surgical spacing: Ensure \vspace{6pt} before \section declarations
-  doc = doc.replace(/(?<!\\vspace\{6pt\}\s*)\n\\section/g, "\n\\vspace{6pt}\n\\section");
+  // Clean any duplicate explicit \vspace before \section so \titlespacing governs section spacing cleanly
+  doc = doc.replace(/\\vspace\{\d+pt\}\s*\\section/g, "\\section");
 
   // 12. Surgical spacing (job-title rows): #1=JobTitle(bold) #2=Location #3=Company #4=Date
-  doc = doc.replace(
-    /\\newcommand\{\\resumeSubheading\}\[4\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[4\]\s*\}/,
-    `\\newcommand{\\resumeSubheading}[4]{
-  \\vspace{4pt}\\nopagebreak[3]
+  if (/\\newcommand\{\\resumeSubheading\}\[4\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[\d\]\s*\}/.test(doc)) {
+    doc = doc.replace(
+      /\\newcommand\{\\resumeSubheading\}\[4\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[\d\]\s*\}/,
+      `\\newcommand{\\resumeSubheading}[4]{
+  \\vspace{${subheadingVspace}}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
     {\\small #3} & \\textit{\\small #4}
   \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
 }`
-  );
+    );
+  } else {
+    doc = doc.replace(
+      /\\newcommand\{\\resumeSubheading\}\[4\]\{[\s\S]*?\\end\{tabular\*\}[^\n]*\}/,
+      `\\newcommand{\\resumeSubheading}[4]{
+  \\vspace{${subheadingVspace}}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
+    {\\small #3} & \\textit{\\small #4}
+  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
+}`
+    );
+  }
 
-  // 13. Surgical spacing: Exactly \vspace{4pt} before project headings in \resumeProjectHeading
-  doc = doc.replace(
-    /\\newcommand\{\\resumeProjectHeading\}\[2\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[4\]\s*\}/,
-    `\\newcommand{\\resumeProjectHeading}[2]{
-  \\vspace{4pt}\\nopagebreak[3]
+  // 13. Surgical spacing: Exactly \vspace{subheadingVspace} before project headings in \resumeProjectHeading
+  if (/\\newcommand\{\\resumeProjectHeading\}\[2\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[\d\]\s*\}/.test(doc)) {
+    doc = doc.replace(
+      /\\newcommand\{\\resumeProjectHeading\}\[2\]\{[\s\S]*?\\end\{tabular\*\}[\s\S]*?\\nopagebreak\[\d\]\s*\}/,
+      `\\newcommand{\\resumeProjectHeading}[2]{
+  \\vspace{${subheadingVspace}}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     #1 & \\textit{\\small #2}
   \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
 }`
-  );
+    );
+  } else {
+    doc = doc.replace(
+      /\\newcommand\{\\resumeProjectHeading\}\[2\]\{[\s\S]*?\\end\{tabular\*\}[^\n]*\}/,
+      `\\newcommand{\\resumeProjectHeading}[2]{
+  \\vspace{${subheadingVspace}}\\nopagebreak[3]
+  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+    #1 & \\textit{\\small #2}
+  \\end{tabular*}\\vspace{1.5pt}\\nopagebreak[4]
+}`
+    );
+  }
 
-  // 14. Surgical spacing & hierarchy: Exactly \vspace{3pt} before subproject headings and \vspace{1pt} after
-  doc = doc.replace(/\\vspace\{(?:2|3|4\.5|5\.5)pt(?: plus [^}]*)?\}\s*\\noindent\s*\\textbf\{/g, "\\vspace{3pt}\n\\noindent \\textbf{");
+  // 14. Surgical spacing & hierarchy: Exactly \vspace{subprojectVspace} before subproject headings and \vspace{1pt} after
+  doc = doc.replace(/\\vspace\{(?:2|3|4\.5|5\.5)pt(?: plus [^}]*)?\}\s*\\noindent\s*\\textbf\{/g, `\\vspace{${subprojectVspace}}\n\\noindent \\textbf{`);
   doc = doc.replace(/(\\noindent \\textbf\{[^\n]+\})\s*\\vspace\{(?:1|1\.5|2)pt\}/g, "$1\n\\vspace{1pt}");
 
   // 15. Remove bullets from project headings: unwrap any \item \textbf{Subproject} inside itemize into standalone bold text
@@ -238,20 +300,28 @@ export async function validateAndCompileLatex(
   safeLatex = safeLatex.replace(/\\pdfgentounicode\s*=\s*1/g, "\\ifdefined\\pdfgentounicode \\pdfgentounicode=1 \\fi");
 
   async function compileWithEngine(engine: string) {
-    const formData = new FormData();
-    formData.append("filecontents[]", safeLatex);
-    formData.append("filename[]", "document.tex");
-    formData.append("engine", engine);
-    formData.append("return", "pdf");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const formData = new FormData();
+        formData.append("filecontents[]", safeLatex);
+        formData.append("filename[]", "document.tex");
+        formData.append("engine", engine);
+        formData.append("return", "pdf");
 
-    return fetch("https://texlive.net/cgi-bin/latexcgi", {
-      method: "POST",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      },
-      body: formData,
-      signal: AbortSignal.timeout(25000), // 25 sec timeout for reliable external TeXLive compilation
-    });
+        return await fetch("https://texlive.net/cgi-bin/latexcgi", {
+          method: "POST",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+          body: formData,
+          signal: AbortSignal.timeout(30000), // 30 sec timeout
+        });
+      } catch (err) {
+        if (attempt === 3) throw err;
+        await new Promise((r) => setTimeout(r, 750 * attempt));
+      }
+    }
+    throw new Error("TeXLive compilation failed after 3 attempts");
   }
 
   try {
@@ -444,8 +514,55 @@ export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): 
   };
 
   if (hasCustomTemplate) {
-    // Path 1: If GEMINI_API_KEY is available, use Gemini to merge improvements into baseLatex template
-    if (process.env.GEMINI_API_KEY) {
+    // Path 1 (PRIMARY): Deterministic surgical patcher — preserves 100% of original layout,
+    // preamble, macros, fonts, geometry and only updates bullet content, skills, and summary in-place.
+    // This is the preferred path for formatting determinism and consistency across runs.
+    const patched = patchLatexTemplateDeterministically(
+      baseLatex,
+      deterministic.canonical,
+      params.audit,
+      params.jobText,
+      params.customMetrics
+    );
+    const singlePatched = optimizeLatexGeometryForOnePage(patched);
+    const safePatched = cleanLingeringPlaceholders(
+      ensureAllHrefsPreservedInLatex(singlePatched, [baseLatex, sanitizedText]),
+      true
+    );
+    const patchCompile = await validateAndCompileLatex(safePatched, [baseLatex, sanitizedText]);
+    if (patchCompile.success && patchCompile.pdfBuffer) {
+      let pageCount = 1;
+      try {
+        const { PDFParse } = await import("pdf-parse");
+        const parser = new PDFParse({ data: patchCompile.pdfBuffer });
+        const parsed = await parser.getText();
+        pageCount = parsed.total || 1;
+        await parser.destroy().catch(() => {});
+      } catch {}
+
+      if (pageCount === 1) {
+        updatedLatex = safePatched;
+        compileResult = patchCompile;
+      } else {
+        console.warn(`Patched LaTeX produced ${pageCount} pages, falling back to 1-page deterministic ATS layout`);
+        const singleLatex = cleanLingeringPlaceholders(
+          ensureAllHrefsPreservedInLatex(deterministic.optimizedLatex, [baseLatex, sanitizedText]),
+          true
+        );
+        const fallbackCompile = await validateAndCompileLatex(singleLatex, [baseLatex, sanitizedText]);
+        if (fallbackCompile.success) {
+          updatedLatex = singleLatex;
+          compileResult = fallbackCompile;
+        } else {
+          updatedLatex = safePatched;
+          compileResult = patchCompile;
+        }
+      }
+    }
+
+    // Path 2 (SECONDARY): If deterministic patcher fails to compile, use Gemini AI as fallback.
+    // AI is NOT used as the first choice to avoid non-deterministic formatting drift between runs.
+    if (!compileResult.success && process.env.GEMINI_API_KEY) {
       try {
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
         const candidateModels = Array.from(
@@ -505,24 +622,6 @@ CRITICAL RULES:
         console.warn("AI LaTeX synthesis failed:", aiErr);
       }
     }
-
-    // Path 2: Deterministic surgical patcher if AI didn't compile or wasn't configured
-    if (!compileResult.success) {
-      const patched = patchLatexTemplateDeterministically(
-        baseLatex,
-        deterministic.canonical,
-        params.audit,
-        params.jobText,
-        params.customMetrics
-      );
-      const safePatched = cleanLingeringPlaceholders(
-        ensureAllHrefsPreservedInLatex(patched, [baseLatex, sanitizedText]),
-        true
-      );
-      const patchCompile = await validateAndCompileLatex(safePatched, [baseLatex, sanitizedText]);
-      updatedLatex = safePatched;
-      compileResult = patchCompile;
-    }
   } else {
     // Path 3: If no custom template provided, use clean deterministic ATS template
     updatedLatex = cleanLingeringPlaceholders(
@@ -560,11 +659,11 @@ CRITICAL RULES:
     delta,
     hyperlinks: hyperlinkValidation
       ? {
-          valid: hyperlinkValidation.valid,
-          foundCount: hyperlinkValidation.foundUrls.length,
-          expectedCount: originalLinks.length,
-          report: hyperlinkValidation.report,
-        }
+        valid: hyperlinkValidation.valid,
+        foundCount: hyperlinkValidation.foundUrls.length,
+        expectedCount: originalLinks.length,
+        report: hyperlinkValidation.report,
+      }
       : undefined,
   };
 }

@@ -187,8 +187,8 @@ export async function analyzeResume(resumeText: string, jobText: string) {
 
   const candidateModels = Array.from(new Set([
     process.env.GEMINI_ATS_MODEL,
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
+    "gemini-2.5-pro",   // Best reasoning for JD analysis and bullet rewrites
+    "gemini-2.5-flash", // Fast fallback
   ].filter(Boolean))) as string[];
 
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -514,7 +514,12 @@ export async function analyzeResume(resumeText: string, jobText: string) {
 
   const synchronizedAudit = {
     ...audit,
-    jd_skills_alignment: baseScoring.matches.length > 0 ? deterministicJdAlignment : audit.jd_skills_alignment,
+    jd_skills_alignment: jobText ? deterministicJdAlignment : {
+      hard_skills_matched: [],
+      twice_rule_satisfied_skills: [],
+      twice_rule_missing_experience_mention: [],
+      hard_skills_missing: [],
+    },
   };
 
   const summaryText = synchronizedAudit.executive_summary ||

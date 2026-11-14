@@ -252,6 +252,9 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
 
       setImprovedLatex(data.updatedLatex);
       setLatexPatchStats(data.stats);
+      if (data.audit) {
+        setReport((prev) => (prev ? { ...prev, score: data.score ?? data.audit.score, unifiedAudit: data.audit } : prev));
+      }
 
       if (data.compiled && data.pdfBase64) {
         setCompileError(null);
@@ -905,6 +908,9 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
 
       setImprovedLatex(data.updatedLatex);
       setLatexPatchStats(data.stats);
+      if (data.audit) {
+        setReport((prev) => (prev ? { ...prev, score: data.score ?? data.audit.score, unifiedAudit: data.audit } : prev));
+      }
 
       if (data.compiled) {
         setCompileError(null);
@@ -1446,15 +1452,20 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                   <span className="text-4xl sm:text-5xl font-black text-white">{live.matchScore === null ? "—" : `${live.matchScore}%`}</span>
                 </div>
                 <p className="mt-1 text-xs text-slate-400">
-                  {audit?.jd_skills_alignment?.twice_rule_satisfied_skills?.length
-                    ? `${audit.jd_skills_alignment.twice_rule_satisfied_skills.length} skills satisfy Twice Rule`
-                    : "Add a JD to see Twice Rule analysis."}
+                  {(() => {
+                    const satisfiedCount = live?.matches
+                      ? live.matches.filter(m => m.placement === "Skills + experience").length
+                      : (audit?.jd_skills_alignment?.twice_rule_satisfied_skills?.length ?? 0);
+                    return satisfiedCount
+                      ? `${satisfiedCount} skills satisfy Twice Rule`
+                      : (jobText ? "No skills satisfy Twice Rule yet." : "Add a JD to see Twice Rule analysis.");
+                  })()}
                 </p>
               </div>
-              {audit?.jd_skills_alignment && (
+              {(live?.matches?.length || audit?.jd_skills_alignment) && (
                 <div className="mt-4 pt-3 border-t border-slate-800 text-xs text-slate-300 flex items-center justify-between">
-                  <span>Matched: {audit.jd_skills_alignment.hard_skills_matched.length}</span>
-                  <span className="text-rose-400 font-medium">Missing: {audit.jd_skills_alignment.hard_skills_missing.length}</span>
+                  <span>Matched: {live?.matches ? live.matches.filter(m => m.evidence.length > 0).length : (audit?.jd_skills_alignment?.hard_skills_matched.length ?? 0)}</span>
+                  <span className="text-rose-400 font-medium">Missing: {live?.matches ? live.matches.filter(m => m.evidence.length === 0).length : (audit?.jd_skills_alignment?.hard_skills_missing.length ?? 0)}</span>
                 </div>
               )}
             </div>

@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 import { PrismaClient } from "@/app/generated/prisma/client";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
@@ -15,12 +16,19 @@ function getPrismaClient(): PrismaClient {
   const rawUrl = process.env.DATABASE_URL || "file:./data/dev.db";
   let url = rawUrl;
 
-  // Resolve relative SQLite file path to absolute path
+  // Resolve relative SQLite file path to absolute path and ensure directory exists
   if (rawUrl.startsWith("file:")) {
     const relativePath = rawUrl.replace("file:", "");
-    if (!path.isAbsolute(relativePath)) {
-      url = `file:${path.resolve(/*turbopackIgnore: true*/ process.cwd(), relativePath)}`;
+    const absolutePath = path.isAbsolute(relativePath)
+      ? relativePath
+      : path.resolve(/*turbopackIgnore: true*/ process.cwd(), relativePath);
+    const dir = path.dirname(absolutePath);
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {}
     }
+    url = `file:${absolutePath}`;
   }
 
   if (process.env.VERCEL && !/^postgres(?:ql)?:/.test(rawUrl)) throw new Error("Configure a PostgreSQL DATABASE_URL on Vercel.");

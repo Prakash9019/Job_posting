@@ -8,7 +8,8 @@ import { applyJobIdentityRules, normalizeJobIdentity } from "../lib/ats/job-iden
 import { JobTargetProfile } from "../lib/ai/resume";
 import { generateApplicationEmail } from "../lib/ai/gemini";
 
-const RESUME_PATH = "./uploads/resumes/user_a/1792158353361-Resume_Loka_Surya_Prakash.pdf";
+const existingResumeFiles = fs.existsSync("./uploads/resumes/user_a") ? fs.readdirSync("./uploads/resumes/user_a") : [];
+const RESUME_PATH = "./uploads/resumes/user_a/" + (existingResumeFiles.find((f) => f.includes("Resume_Loka_Surya_Prakash") && f.endsWith(".pdf")) || "1794563988523-Resume_Loka_Surya_Prakash.pdf");
 
 async function getPdfInfo(buf: Buffer) {
   const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;

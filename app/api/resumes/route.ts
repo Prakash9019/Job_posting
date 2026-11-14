@@ -122,6 +122,21 @@ export async function POST(req: NextRequest) {
       finalBuffer = buffer;
       finalMimeType = mimeType;
       finalFileName = originalName;
+
+      // Single-page resume enforcement: if the uploaded resume is a PDF that spans multiple pages,
+      // compile and validate a clean 1-page ATS PDF directly from the extracted text whenever feasible.
+      if (!isTex && extractedText.length >= 100) {
+        try {
+          const generated = await generateResumePdfFromText(extractedText);
+          if (generated.ok && generated.pages === 1) {
+            finalBuffer = generated.buffer;
+            finalMimeType = "application/pdf";
+            finalFileName = getCandidateFilename(extractedText, undefined, "pdf");
+          }
+        } catch (genErr) {
+          console.warn("Could not auto-generate 1-page PDF on upload, using original file:", genErr);
+        }
+      }
     }
 
     // Save to private storage strictly partitioned by user

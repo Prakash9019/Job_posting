@@ -24,12 +24,60 @@ export async function POST(req: NextRequest) {
       customMetrics,
     });
 
-    // Compute updated score if jobText is provided
+    // Compute updated score and re-verify Twice Rule strictly against the final resume
     let newScore: number | undefined;
+    let updatedAudit = audit;
     if (jobText) {
       const reqs = extractRequirementsFromJobText(jobText);
-      const scoring = scoreResume(atsOptimizedText, reqs, jobText);
+      let finalText = atsOptimizedText;
+      if (result.compiled && result.pdfBase64) {
+        try {
+          const { PDFParse } = await import("pdf-parse");
+          const buf = Buffer.from(result.pdfBase64, "base64");
+          const parser = new PDFParse({ data: buf });
+          const parsed = await parser.getText();
+          await parser.destroy().catch(() => {});
+          if (parsed.text && parsed.text.length >= 100) {
+            finalText = parsed.text;
+          }
+        } catch {}
+      }
+      const scoring = scoreResume(finalText, reqs, jobText);
       newScore = scoring.score;
+
+      const hardSkillsMatched = scoring.matches
+        .filter((m) => m.evidence.length > 0)
+        .map((m) => m.keyword);
+      const twiceRuleSatisfied = scoring.matches
+        .filter((m) => m.placement === "Skills + experience")
+        .map((m) => m.keyword);
+      const twiceRuleMissingExp = scoring.matches
+        .filter((m) => m.placement === "Skills only")
+        .map((m) => m.keyword);
+      const hardSkillsMissing = scoring.matches
+        .filter((m) => m.evidence.length === 0)
+        .map((m) => ({
+          keyword: m.keyword,
+          importance: m.importance === "required" ? ("REQUIRED" as const) : ("PREFERRED" as const),
+        }));
+
+      if (audit) {
+        updatedAudit = {
+          ...audit,
+          score: scoring.score,
+          overall_ats_score: scoring.score,
+          scoring_breakdown: {
+            ...(audit.scoring_breakdown || {}),
+            jd_keyword_match_score: scoring.matchScore,
+          },
+          jd_skills_alignment: {
+            hard_skills_matched: hardSkillsMatched,
+            twice_rule_satisfied_skills: twiceRuleSatisfied,
+            twice_rule_missing_experience_mention: twiceRuleMissingExp,
+            hard_skills_missing: hardSkillsMissing,
+          },
+        };
+      }
     }
 
     return NextResponse.json({
@@ -41,6 +89,7 @@ export async function POST(req: NextRequest) {
       error: result.error,
       stats: result.stats,
       score: newScore,
+      audit: updatedAudit,
     });
   } catch (err: unknown) {
     console.error("Apply to LaTeX API error:", err);

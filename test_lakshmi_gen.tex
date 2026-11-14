@@ -1,0 +1,153 @@
+%-------------------------
+% Adaptive ATS LaTeX Resume
+% Clean Typography, Zero Page Numbers, 100% ATS Compliant
+%------------------------
+
+\documentclass[a4paper,9.5pt]{extarticle}
+\usepackage[left=0.35in, right=0.35in, top=0.24in, bottom=0.24in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{textcomp}
+\usepackage{tabularx}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\input{glyphtounicode}
+\ifdefined\pdfgentounicode \pdfgentounicode=1 \fi
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\linespread{0.96}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+\urlstyle{same}
+
+% Section spacing: 4pt before, 2pt after (3pt/1.5pt on dense resumes)
+\titleformat{\section}{\normalsize\bfseries\uppercase}{}{0em}{}[\titlerule]
+\titlespacing*{\section}{0pt}{2.5pt}{1.0pt}
+
+% Global list spacing: zero internal vertical bloat
+\setlist[itemize]{leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet}
+
+\newcommand{\resumeItem}[1]{
+  \item #1
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{1.8pt}\nopagebreak[3]
+  \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
+    \textbf{#1} & \textit{\small #2} \\[-1.5pt]
+    {\small #3} & \textit{\small #4}
+  \end{tabular*}\nopagebreak[4]
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+  \vspace{1.8pt}\nopagebreak[3]
+  \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
+    #1 & \textit{\small #2}
+  \end{tabular*}\nopagebreak[4]
+}
+
+\newcommand{\resumeDivider}{\enspace\textbar\enspace}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]}
+\newcommand{\resumeItemListEnd}{\end{itemize}}
+
+\begin{document}
+\pagestyle{empty}
+\thispagestyle{empty}
+
+%----------HEADING----------
+\begin{center}
+  {\LARGE \textbf{Sayyapureddy Lakshmi}} \\[1pt]
+  \small +91-8309769388 \enspace\textbar\enspace \href{mailto:lakshmi.charvy1819@gmail.com}{\underline{lakshmi.charvy1819@gmail.com}} \enspace\textbar\enspace \href{https://linkedin.com/in/applicant}{\underline{LinkedIn}} \enspace\textbar\enspace \href{https://github.com/applicant}{\underline{GitHub}}
+\end{center}
+\vspace{-10pt}
+
+%----------BODY SECTIONS----------
+\section{PROFESSIONAL SUMMARY}
+{\small Computer Science graduate (B.Tech, CGPA 8.84) with hands-on experience building production Artificial Intelligence (AI) systems and research experience at IISc Bangalore (Centre for Brain Research). Specialized in Agentic AI, Large Language Models, Retrieval-Augmented Generation (RAG), and Computer Vision, with a track record of building multi-agent orchestration pipelines, optimizing transformer architectures for medical imaging, and deploying automated workflow agents using LangChain, PyTorch, and TensorFlow.\par}
+\section{TECHNICAL SKILLS}
+\noindent {\small \textbf{Languages:} Python, JavaScript, HTML, CSS, SQL}\\[0.5pt]
+\noindent {\small \textbf{Frameworks \& Libraries:} LangChain, LangGraph, PyTorch, TensorFlow, Scikit-learn, Agno, NumPy, Pandas, Matplotlib, Hugging Face, Keras}\\[0.5pt]
+\noindent {\small \textbf{AI/ML Platforms \& Tools:} Cognee, Redis, Gemini API, OpenAI API, MCP (Model Context Protocol), NeMo Guardrails, RAGAS, Vector Databases}\\[0.5pt]
+\noindent {\small \textbf{Cloud, MLOps \& Dev Tools:} AWS/Azure/GCP, Docker, Kubernetes, CI/CD, MLOps, Model Deployment, FastAPI, Streamlit, \href{https://github.com/GitHub}{\underline{GitHub}}, Postman, Jira, MySQL, Jupyter Notebook, n8n, GitHub Copilot, ChatGPT, Claude, OpenAI Codex}\\[0.5pt]
+\noindent {\small \textbf{Specializations:} Agentic AI System Architecture, Multi-Agent Systems, Large Language Models (LLMs), Natural Language Processing (NLP), Retrieval-Augmented Generation (RAG), LLM Fine-Tuning, LLM Evaluation \& Guardrails, AI Security \& Access Control, Prompt Engineering, Computer Vision, Machine Learning, Deep Learning, Generative AI}\\[0.5pt]
+\section{WORK EXPERIENCE}
+\resumeSubheading
+  {Julley Online Pvt Ltd Mar 2026 - Present}{}
+  {AI Engineer Hyderabad}{}
+\nopagebreak[4]
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item Architecting and building a secure Enterprise Agentic Stack to power production-grade AI assistants, with security and access control as core design constraints.
+  \item Implementing multi-agent orchestration using Agno, GraphRAG-based contextual memory with Cognee, semantic caching via Redis, and identity-aware access control using Scalekit to ensure reliable, low-latency, and multi-tenant-safe AI workflows for B2B applications.
+  \item Developed the iOS and Android mobile applications for the company's Company Secretary (CS) compliance platform to their respective app stores.
+  \item Built OCR-based extraction pipelines to process and structure large volumes of financial data for the platform's automated compliance workflows.
+\end{itemize}
+\resumeSubheading
+  {Infosys Dec 2025 - Mar 2026}{}
+  {Software Engineer Intern Mysuru, Karnataka}{}
+\nopagebreak[4]
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item Contributed to the design, development, and testing of full-stack web application features and backend services using Python, JavaScript, and SQL within an Agile/Scrum team.
+  \item Built REST APIs and worked with MySQL databases, using Git for version control and Jira for sprint tracking, to deliver features on schedule.
+  \item Collaborated with senior engineers on code reviews and debugging, and documented technical specifications to support cross-team handoffs.
+\end{itemize}
+\resumeSubheading
+  {Centre for Brain Research, IISc Bangalore Jun 2025 - Aug 2025}{}
+  {Research Intern Bangalore}{}
+\nopagebreak[4]
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item Achieved 90\% accuracy with Swin Transformer and 92\% accuracy with TransNetOCT for Alzheimer's Disease classification using Retinal OCT images.
+  \item Engineered data pipelines for preprocessing and training transformer-based architectures using PyTorch and TensorFlow, reducing training time by 20\%.
+\end{itemize}
+\resumeSubheading
+  {Arthavo Technologies Mar 2024 - May 2024}{}
+  {Data Science Intern Remote}{}
+\nopagebreak[4]
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item Developed an Emotion Recognition System using Computer Vision (OpenCV) and optimized inference latency with efficient Scikit-learn classification algorithms.
+\end{itemize}
+\section{PROJECTS}
+\resumeProjectHeading
+  {\textbf{AI-Powered Resume Analyzer}}{}
+{\small \textit{Live Demo}}\\[1pt]\nopagebreak[4]
+\resumeProjectHeading
+  {\textbf{Gemini Pro, LLM, Prompt Engineering}}{}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item Built an intelligent ATS system using Google Gemini Pro with a prompting strategy that extracts keywords from resumes against Job Descriptions (JD), improving candidate matching rates by 18\%.
+\end{itemize}
+\resumeProjectHeading
+  {\textbf{MCQ Generator}}{}
+{\small \textit{Live Demo}}\\[1pt]\nopagebreak[4]
+\resumeProjectHeading
+  {\textbf{LangChain, Gemini API, RAG}}{}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item Built an automated assessment tool using LangChain and a RAG pipeline to generate context-aware questions from PDF documents, strictly grounded in source material to eliminate hallucinations.
+\end{itemize}
+\resumeProjectHeading
+  {\textbf{Multi-Language Invoice Extractor}}{}
+{\small \textit{Live Demo}}\\[1pt]\nopagebreak[4]
+\resumeProjectHeading
+  {\textbf{OCR, Gemini Pro}}{}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item Built an end-to-end invoice processing system combining OCR with LLM reasoning to extract structured data from multi-lingual documents without manual template configuration.
+\end{itemize}
+\section{EDUCATION}
+\resumeSubheading
+  {Vignan's Institute Of Information Technology}{Visakhapatnam}
+  {Bachelor of Technology in Computer Science Technology; CGPA: 8.84}{2023 -- 2026}
+\resumeSubheading
+  {Government Polytechnic for Women}{Bheemunipatnam}
+  {Diploma in Computer Engineering; Percentage: 90.6\%}{2020 -- 2023}
+\section{ACHIEVEMENTS}
+\begin{itemize}[leftmargin=1.2em, itemsep=0.3pt, parsep=0pt, topsep=0.8pt, partopsep=0pt, label=\textbullet]
+  \item \textbf{Kaggle Bronze Medalist:} Placed 244th of 4,729 teams in the \textquotedblleft{}Orbit Wars\textquotedblright{} competition (Jul 2026); Top 20 in SusHacks 2025 (50+ hackathons); Ranked 37th in the National Entrepreneurship Challenge (India).
+  \item \textbf{Leadership:} Campus Ambassador for IIT Bombay E-Cell; Student Coordinator at ED Cell VIIT.
+\end{itemize}
+\section{CERTIFICATIONS}
+{\small CCNA: Enterprise Networking \& Security (CISCO) \enspace\textbar\enspace Python Essentials 2 (CISCO) \enspace\textbar\enspace Claude Platform 101 \enspace\textbar\enspace Claude Code 101 (Anthropic)\par}
+\end{document}

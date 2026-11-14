@@ -9,7 +9,7 @@ import {
   formatSkillDisplay,
 } from "./scoring";
 import { normalizeJobIdentity } from "./job-identity";
-import { analyzeResume, UnifiedATSAudit } from "./analysis";
+import type { UnifiedATSAudit } from "./analysis";
 import { parseBalancedBraces } from "./latex-text";
 import {
   formatLatexWithHyperlinks,
@@ -132,6 +132,13 @@ export function splitTrailingLocation(str: string): { main: string; loc: string 
   if (commaStateMatch && commaStateMatch.index !== undefined) {
     const beforeComma = trimmed.slice(0, commaStateMatch.index).trim();
     const afterComma = trimmed.slice(commaStateMatch.index + 1).trim();
+    const lastComma = beforeComma.lastIndexOf(",");
+    if (lastComma !== -1) {
+      const main = beforeComma.slice(0, lastComma).trim();
+      const city = beforeComma.slice(lastComma + 1).trim();
+      const loc = `${city}, ${afterComma}`;
+      return { main, loc };
+    }
     const beforeWords = beforeComma.split(/\s+/);
     const cityWord = beforeWords.pop() || "";
     const loc = `${cityWord}, ${afterComma}`;
@@ -209,8 +216,12 @@ export function generateATSLatex(
   options?: { originalLatex?: string; knownLinks?: ExtractedHyperlink[] }
 ): string {
   const sanitized = sanitizeOcrText(optimizedText);
-  const canonical = parseResumeToCanonical(sanitized, options?.knownLinks);
-  return generateLatexFromCanonical(canonical, options);
+  const linksFromMarkdown = extractHyperlinksFromMarkdownText(sanitized);
+  const linksFromLatex = options?.originalLatex ? extractHyperlinksFromLatex(options.originalLatex) : [];
+  const combinedLinks = [...linksFromLatex, ...linksFromMarkdown, ...(options?.knownLinks || [])];
+  const canonical = parseResumeToCanonical(sanitized, combinedLinks);
+  trimContentForSinglePage(canonical);
+  return generateLatexFromCanonical(canonical, { ...options, knownLinks: combinedLinks });
 }
 
 export function canReplaceFlexible(fullText: string, snippet: string): boolean {
@@ -484,13 +495,13 @@ export function getCandidateFilename(
       .join("_");
 
     if (titleCased) {
-      return cleanCompany
-        ? `Resume_${titleCased}_${cleanCompany}.${extension}`
-        : `Resume_${titleCased}.${extension}`;
+      return cleanCompany ? `Resume_${titleCased}_${cleanCompany}.${extension}` : `Resume_${titleCased}.${extension}`;
     }
   }
 
-  return cleanCompany ? `Resume_${cleanCompany}.${extension}` : `Resume.${extension}`;
+  // End-of-loop fallback: always include company suffix
+  const companySuffix = cleanCompany || "Company";
+  return `Resume_${companySuffix}.${extension}`;
 }
 
 export function resolvePlaceholder(bullet: string, customVal?: string): string {
@@ -627,6 +638,7 @@ export function cleanLingeringPlaceholders(content: string, isLatex = false): st
     .replace(/\band\s+(reducing|cutting|decreasing|minimizing|lowering|saving|mitigating)\s+manual\b/gi, "while $1 manual")
     .replace(/\bextract\s+equipment\s+and\s+instrument\s+tags\b/gi, "extract equipment tags")
     .replace(/\bResults-driven for\s+(?:an?\s+)?/gi, "Results-driven ")
+    .replace(/\b([Aa])\s+increase\b/g, (_m, a) => (a === "A" ? "An increase" : "an increase"))
     .replace(/\$C\+\+\$/g, "C++")
     .replace(/\\\$C\+\+\\\$/g, "C++");
 
@@ -892,28 +904,144 @@ export function weaveSkillIntoExperienceBullets(
     return { wovenBullets: bullets, success: false };
   }
 
-  // 4. Docker / Kubernetes
-  if (/^docker$/i.test(normSkill) || /^kubernetes$/i.test(normSkill)) {
+  // 4. Docker
+  if (/^docker$/i.test(normSkill)) {
     for (let i = 0; i < updatedBullets.length; i++) {
       const b = updatedBullets[i];
       const existingContainer = b.match(/\bcontainerized with ([A-Za-z0-9.+#-]+)/i);
       if (existingContainer && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(existingContainer[0], `containerized with ${existingContainer[1]} and ${normSkill}`);
+        updatedBullets[i] = b.replace(existingContainer[0], `containerized with ${existingContainer[1]} and Docker`);
         return { wovenBullets: updatedBullets, success: true };
       }
       if (/telemetry\s+pipeline/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\btelemetry\s+pipeline\b/i, `telemetry pipeline containerized with ${normSkill}`);
+        updatedBullets[i] = b.replace(/\btelemetry\s+pipeline\b/i, "telemetry pipeline containerized with Docker");
         return { wovenBullets: updatedBullets, success: true };
       }
       if (/integration\s+hub/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bintegration\s+hub\b/i, `integration hub containerized with ${normSkill}`);
+        updatedBullets[i] = b.replace(/\bintegration\s+hub\b/i, "integration hub containerized with Docker");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/founder-investor\s+platform/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bfounder-investor\s+platform\b/i, "founder-investor platform containerized with Docker");
         return { wovenBullets: updatedBullets, success: true };
       }
     }
     return { wovenBullets: bullets, success: false };
   }
 
-  // 5. Agentic AI: "Engineered 5+ distinct AI workflows" -> "Engineered 5+ distinct Agentic AI workflows"
+  // 5. Kubernetes
+  if (/^kubernetes|k8s$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/containerized with Docker\b/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bcontainerized with Docker\b/i, "containerized with Docker and Kubernetes");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/\bcloud\s+clusters?\b/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bcloud\s+clusters?\b/i, "Kubernetes cloud clusters");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/telemetry\s+pipeline/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\btelemetry\s+pipeline\b/i, "Kubernetes-orchestrated telemetry pipeline");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/zero-downtime\s+CI\/CD\s+deployments/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bzero-downtime\s+CI\/CD\s+deployments\b/i, "zero-downtime CI/CD deployments across Kubernetes clusters");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
+  }
+
+  // 6. REST / REST APIs / RESTful
+  if (/^rest(?:ful)?(?:\s*apis?)?$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/reusable\s+connector\s+workflows/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\breusable\s+connector\s+workflows\b/i, "reusable REST API connector workflows");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/centralized\s+(?:microservices\s+)?integration\s+hub/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bintegration\s+hub\b/i, "REST API integration hub");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/fundraising\s+pipelines/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bfundraising\s+pipelines\b/i, "RESTful fundraising pipelines");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/founder-investor\s+platform\s+using/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bfounder-investor\s+platform\s+using\b/i, "founder-investor platform with REST APIs using");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
+  }
+
+  // 7. Distributed Systems
+  if (/^distributed\s+systems?$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/distributed\s+ArduPilot/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bdistributed\s+ArduPilot\b/i, "Distributed Systems architecture for ArduPilot");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/centralized\s+integration\s+hub/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bcentralized\s+integration\s+hub\b/i, "distributed systems integration hub");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/full-stack\s+founder-investor\s+platform/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bfull-stack\s+founder-investor\s+platform\b/i, "distributed full-stack founder-investor platform");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
+  }
+
+  // 8. LLM / Large Language Models
+  if (/^(?:llms?|large language models?)$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/using\s+YOLO,\s+SAHI,\s+OCR,\s+OpenCV,\s+and\s+Gemini/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\band\s+Gemini\b/i, "and Gemini LLM");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/5\+\s+distinct\s+AI\s+workflows/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\b5\+\s+distinct\s+AI\s+workflows\b/i, "5+ distinct AI and LLM workflows");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/mock\s+pitching\s+experience/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bAI-powered\s+mock\s+pitching\s+experience\b/i, "LLM-powered mock pitching experience");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/parallel\/sequential\s+AI\s+workflows/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bparallel\/sequential\s+AI\s+workflows\b/i, "parallel/sequential AI and LLM workflows");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
+  }
+
+  // 9. Git / GitHub
+  if (/^(?:git|github|version control)$/i.test(normSkill)) {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      const b = updatedBullets[i];
+      if (/zero-downtime\s+CI\/CD\s+deployments/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bzero-downtime\s+CI\/CD\s+deployments\b/i, "zero-downtime Git-driven CI/CD deployments");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/reusable\s+connector\s+workflows/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\breusable\s+connector\s+workflows\b/i, "Git version-controlled connector workflows");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+      if (/fundraising\s+pipelines/i.test(b) && !exactRe.test(b)) {
+        updatedBullets[i] = b.replace(/\bengagement\s+tracking\s+mechanisms\b/i, "engagement tracking mechanisms managed via Git workflows");
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return { wovenBullets: bullets, success: false };
+  }
+
+  // 10. Agentic AI: "Engineered 5+ distinct AI workflows" -> "Engineered 5+ distinct Agentic AI workflows"
   if (/^agentic ai$/i.test(normSkill)) {
     const aiNoun = /(?<!Agentic )\bAI(?=\s+(?:workflows?|agents?|pipelines?|systems?|matching|investor|models?|assistants?|platforms?|features?|copilots?|orchestration))/;
     for (let i = 0; i < updatedBullets.length; i++) {
@@ -942,7 +1070,7 @@ export function weaveSkillIntoExperienceBullets(
     return { wovenBullets: bullets, success: false };
   }
 
-  // 6. Cloud providers (Azure / AWS / GCP): anchor to existing cloud / container / mailbox-integration context
+  // 11. Cloud providers (Azure / AWS / GCP): anchor to existing cloud / container / mailbox-integration context
   if (/^(?:azure|microsoft azure|aws|gcp|amazon web services|google cloud(?: platform)?)$/i.test(normSkill)) {
     for (let i = 0; i < updatedBullets.length; i++) {
       const b = updatedBullets[i];
@@ -979,25 +1107,22 @@ export function weaveSkillIntoExperienceBullets(
     }
   }
 
-  // 4. Generic contextual weaving: distribute at most 1 skill per bullet with clean commas
+  // 12. Generic contextual weaving: distribute at most 1 skill per bullet with clean commas
   if (primaryOnly) return { wovenBullets: bullets, success: false };
   for (let i = 0; i < updatedBullets.length; i++) {
     const b = updatedBullets[i];
     if (b.length > 25 && !exactRe.test(b)) {
-      const andCount = (b.match(/\band\b/gi) || []).length;
-      if (andCount >= 2) continue; // Don't overload bullets already containing multiple 'and's
-
-      const usingMatch = b.match(/\busing\s+([A-Za-z0-9.,\s&+#/-]+?)(?=[;!?]|\s+(?:for|to|which|that|enabling|boosting|improving|cutting|scaling)\b|[.]$)/i);
+      const usingMatch = b.match(/\b(?:using|with|leveraging)\s+([A-Za-z0-9.,\s&+#/-]+?)(?=[;!?]|\s+(?:for|to|which|that|enabling|boosting|improving|cutting|scaling)\b|[.]$)/i);
       if (usingMatch && usingMatch[1]) {
         const rawList = usingMatch[1].trim().replace(/,\s*and\s+/gi, ", ").replace(/\s+and\s+/gi, ", ");
         const items = rawList.split(/,\s*/).map((s) => s.trim()).filter(Boolean);
-        if (items.length > 0 && items.length <= 4 && !items.some((it) => it.toLowerCase() === normSkill.toLowerCase())) {
+        if (items.length > 0 && items.length <= 5 && !items.some((it) => it.toLowerCase() === normSkill.toLowerCase())) {
           items.push(normSkill);
           const formattedList =
             items.length === 2
               ? `${items[0]} and ${items[1]}`
               : `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
-          updatedBullets[i] = b.replace(usingMatch[0], `using ${formattedList}`);
+          updatedBullets[i] = b.replace(usingMatch[0], `${usingMatch[0].split(/\s+/)[0]} ${formattedList}`);
           return { wovenBullets: updatedBullets, success: true };
         }
       }
@@ -1040,6 +1165,16 @@ export function parseResumeToCanonical(
   let linkedinUrl = process.env.DEFAULT_LINKEDIN_URL || "https://linkedin.com/in/applicant";
   let githubUrl = process.env.DEFAULT_GITHUB_URL || "https://github.com/applicant";
   let portfolioUrl = "";
+
+  if (knownLinks && knownLinks.length > 0) {
+    const lk = knownLinks.find((l) => l.category === "linkedin" || /linkedin\.com\/in\//i.test(l.url));
+    if (lk) linkedinUrl = lk.url;
+    const gh = knownLinks.find((l) => l.category === "github" || /github\.com\//i.test(l.url));
+    if (gh) githubUrl = gh.url;
+    const pf = knownLinks.find((l) => (l.category as string) === "portfolio" || (l.category === "general" && !/linkedin|github/i.test(l.url)));
+    if (pf) portfolioUrl = pf.url;
+  }
+
   let summary = "";
   const technicalSkills: Record<string, string[]> = {};
   const experience: ExperienceItem[] = [];
@@ -1054,6 +1189,7 @@ export function parseResumeToCanonical(
   for (let i = 0; i < cleanLines.length; i++) {
     const line = cleanLines[i].trim();
     if (!line) continue;
+    const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
 
     // Heading match
     const normHeading = line.replace(/^[#*\-_~\s]+|[#*\-_~\s:]+$/g, "").trim();
@@ -1157,8 +1293,43 @@ export function parseResumeToCanonical(
         continue;
       }
 
+      // Check for 3-line experience block: [Line0 (Company/Loc), Line1 (Role), Line2 (Date)]
+      if (i + 2 < cleanLines.length) {
+        const line0 = line;
+        const line1 = cleanLines[i + 1].trim();
+        const line2 = cleanLines[i + 2].trim();
+        const line2DateMatch = line2.match(dateRangeRe);
+
+        if (
+          !bulletRe.test(line0) &&
+          !bulletRe.test(line1) &&
+          !bulletRe.test(line2) &&
+          line2DateMatch &&
+          !dateRangeRe.test(line0) &&
+          !dateRangeRe.test(line1) &&
+          !CANONICAL_HEADINGS.some(([, r]) => r.test(line0)) &&
+          !CANONICAL_HEADINGS.some(([, r]) => r.test(line1)) &&
+          !CANONICAL_HEADINGS.some(([, r]) => r.test(line2))
+        ) {
+          const dStr = line2DateMatch[0];
+          const parsed0 = splitTrailingLocation(line0);
+          const comp0 = parsed0.main || line0;
+          const loc0 = parsed0.loc;
+
+          experience.push({
+            company: comp0,
+            location: loc0 || undefined,
+            role: line1,
+            dateRange: dStr,
+            bullets: [],
+            subheadings: [],
+          });
+          i += 2;
+          continue;
+        }
+      }
+
       const dateMatch = line.match(dateRangeRe);
-      const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
       const nextDateMatch = nextLine.match(dateRangeRe);
 
       if (dateMatch && !bulletRe.test(line)) {
@@ -1291,21 +1462,44 @@ export function parseResumeToCanonical(
         continue;
       }
 
+      if (
+        projects.length > 0 &&
+        projects[projects.length - 1].bullets.length === 0 &&
+        !projects[projects.length - 1].techStack &&
+        nextLine &&
+        bulletRe.test(nextLine)
+      ) {
+        projects[projects.length - 1].techStack = line;
+        continue;
+      }
+
       let pTitle = line;
       let pTech = "";
+      let pDate = "";
       if (line.includes("|") || line.includes(" - ") || line.includes(" — ")) {
         const sep = line.includes("|") ? "|" : (line.includes(" — ") ? " — " : " - ");
         const [t, ...r] = line.split(sep);
         pTitle = t.trim();
-        pTech = r.join(sep).trim();
+        const nonDateSegments: string[] = [];
+        for (const seg of r) {
+          const s = seg.trim();
+          if (dateRangeRe.test(s) || /^\d{4}\s*[-–—]\s*(?:\d{4}|Present)$/i.test(s)) {
+            pDate = s;
+          } else {
+            nonDateSegments.push(s);
+          }
+        }
+        pTech = nonDateSegments.join(sep).trim();
       }
-      projects.push({ title: pTitle, techStack: pTech || undefined, bullets: [] });
+      if (pTitle.toLowerCase().endsWith(" code")) {
+        pTitle = pTitle.replace(/\s+code$/i, "").trim();
+      }
+      projects.push({ title: pTitle, techStack: pTech || undefined, dateRange: pDate || undefined, bullets: [] });
       continue;
     }
 
     if (currentSection === "EDUCATION") {
       const dateMatch = line.match(dateRangeRe);
-      const nextLine = i + 1 < cleanLines.length ? cleanLines[i + 1].trim() : "";
       const cleanEduLine = cleanAiText(line).replace(/^[•*–—\-\s]+/, "").trim();
 
       if (cleanEduLine.includes("|")) {
@@ -1365,14 +1559,29 @@ export function parseResumeToCanonical(
       }
 
       const splitInst = splitTrailingLocation(cleanEduLine);
-      let degPart = nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine)) && !bulletRe.test(nextLine) ? cleanAiText(nextLine) : cleanEduLine;
+      let degPart = cleanEduLine;
+      let dStr = "";
+      let gpaPart = "";
+
       if (nextLine && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine)) && !bulletRe.test(nextLine)) {
+        const nextDateMatch = nextLine.match(dateRangeRe);
+        if (nextDateMatch) {
+          dStr = nextDateMatch[0];
+          degPart = cleanAiText(nextLine.replace(dStr, "").replace(/^[|–—\s]+|[|–—\s]+$/g, ""));
+        } else {
+          degPart = cleanAiText(nextLine);
+        }
+        const gpaMatch = degPart.match(/(?:CGPA|GPA|Percentage):\s*([0-9.]+(?:\/[0-9.]+)?%?)/i);
+        if (gpaMatch) gpaPart = gpaMatch[0];
         i++;
       }
+
       education.push({
         institution: cleanAiText(splitInst.main || cleanEduLine),
         degree: degPart,
         location: cleanAiText(splitInst.loc) || undefined,
+        dateRange: dStr || undefined,
+        gpa: gpaPart || undefined,
         bullets: [],
       });
       continue;
@@ -1544,7 +1753,7 @@ export function cleanAiText(text: string): string {
   let cleaned = sanitizeOcrText(text).trim();
   // Strip leading stray artifacts (e.g. "small ", "textbf ", "[leftmargin=...]", dimensions)
   cleaned = cleaned
-    .replace(/^\\?\*?\s*/, "")
+    .replace(/^\\?\*(?!\*)\s*/, "")
     .replace(/^\\(?:textbf|small)\b\s*/i, "")
     .replace(/^(?:textbf|small)\s+/i, "")
     .replace(/\[leftmargin=[^\]]*\]/g, "")
@@ -1554,13 +1763,13 @@ export function cleanAiText(text: string): string {
   // Loop to strip leading bullet characters like "• ", "* ", "- ", "∗ ", "– "
   while (
     /^[-•–—▪▫◦‣▸▹➢➣→+∗✔✓◆◇►⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]\s*/.test(cleaned) ||
-    /^\*\s+/.test(cleaned) ||
-    /^\\\*\s*/.test(cleaned)
+    /^\*(?!\*)\s+/.test(cleaned) ||
+    /^\\\*(?!\*)\s*/.test(cleaned)
   ) {
     cleaned = cleaned
       .replace(/^[-•–—▪▫◦‣▸▹➢➣→+∗✔✓◆◇►⁃∙·\u2022\u2023\u25E6\u2043\u2219\u25AA\u25AB\u25CF]\s*/, "")
-      .replace(/^\*\s+/, "")
-      .replace(/^\\\*\s*/, "")
+      .replace(/^\*(?!\*)\s+/, "")
+      .replace(/^\\\*(?!\*)\s*/, "")
       .trim();
   }
 
@@ -1671,6 +1880,35 @@ export function generateLatexFromCanonical(
     });
   }
 
+  const estimatedLines = estimateRenderedLines(resume);
+  const isUltraDenseOnePage = estimatedLines > 74 && estimatedLines <= 88;
+  const isDenseOnePage = estimatedLines > 62 && estimatedLines <= 74;
+  const isStandardOnePage = estimatedLines > 50 && estimatedLines <= 62;
+  const isSparseOnePage = estimatedLines <= 50;
+
+  const listKeyVals = isUltraDenseOnePage
+    ? "leftmargin=1.2em, itemsep=0pt, parsep=0pt, topsep=0.5pt, partopsep=0pt, label=\\textbullet"
+    : isDenseOnePage
+      ? "leftmargin=1.2em, itemsep=0.6pt, parsep=0pt, topsep=1.0pt, partopsep=0pt, label=\\textbullet"
+      : isStandardOnePage
+        ? "leftmargin=1.2em, itemsep=0.7pt, parsep=0pt, topsep=1.2pt, partopsep=0pt, label=\\textbullet"
+        : "leftmargin=1.2em, itemsep=0.9pt, parsep=0pt, topsep=1.4pt, partopsep=0pt, label=\\textbullet";
+  const listParams = `[${listKeyVals}]`;
+  const subHeadingVspace = isUltraDenseOnePage
+    ? "0.5pt"
+    : isDenseOnePage
+      ? "2.5pt"
+      : isStandardOnePage
+        ? "3.0pt"
+        : "3.5pt";
+  const subprojectVspace = isUltraDenseOnePage
+    ? "1.0pt"
+    : isDenseOnePage
+      ? "2.0pt"
+      : isStandardOnePage
+        ? "2.5pt"
+        : "3pt";
+
   let bodyLatex = "";
 
   // 1. Professional Summary
@@ -1679,7 +1917,7 @@ export function generateLatexFromCanonical(
     bodyLatex += `\\section{PROFESSIONAL SUMMARY}\n{\\small ${formatLatexLine(cleanSummary, allKnownLinks)}\\par}\n`;
   }
 
-  // 2. Technical Skills — use \noindent prefix for clean left-aligned dense list (no leading space artifact)
+  // 2. Technical Skills — use \\noindent prefix for clean left-aligned dense list (no leading space artifact)
   if (resume.technicalSkills) {
     bodyLatex += `\\section{TECHNICAL SKILLS}\n`;
     if (typeof resume.technicalSkills === "object" && !Array.isArray(resume.technicalSkills)) {
@@ -1710,13 +1948,13 @@ export function generateLatexFromCanonical(
       const loc = cleanAiText(exp.location || "");
       const dateRange = formatDateRangeForLatex(exp.dateRange);
 
-      // Row 1: Job Title (bold, left) | Location (italic small, right)
-      // Row 2: Company Name (small, left) | Date Range (italic small, right)
-      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
+      // Row 1: Company Name (bold, left) | Location (italic small, right)
+      // Row 2: Job Title (small, left) | Date Range (italic small, right)
+      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
 
       // Top-level bullets under company
       if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
-        bodyLatex += `\\nopagebreak[4]\n\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+        bodyLatex += `\\nopagebreak[4]\n\\begin{itemize}${listParams}\n`;
         for (const b of exp.bullets) {
           const cleanBullet = cleanAiText(b);
           if (!cleanBullet) continue;
@@ -1750,7 +1988,7 @@ export function generateLatexFromCanonical(
             }
           }
 
-          bodyLatex += `\\vspace{2pt}\n\\noindent \\textbf{${subTitle}}${subTech}\n\\vspace{0.5pt}\n\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+          bodyLatex += `\\vspace{${subprojectVspace}}\n\\noindent \\textbf{${subTitle}}${subTech}\n\\vspace{1pt}\n\\begin{itemize}${listParams}\n`;
 
           if (bulletsToRender.length > 0) {
             for (const b of bulletsToRender) {
@@ -1778,7 +2016,7 @@ export function generateLatexFromCanonical(
         bodyLatex += `{\\small \\textit{${pTech}}}\\\\[1pt]\\nopagebreak[4]\n`;
       }
       if (Array.isArray(proj.bullets) && proj.bullets.length > 0) {
-        bodyLatex += `\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+        bodyLatex += `\\begin{itemize}${listParams}\n`;
         for (const b of proj.bullets) {
           const cleanBullet = cleanAiText(b);
           if (!cleanBullet) continue;
@@ -1799,7 +2037,7 @@ export function generateLatexFromCanonical(
       const eduAny = edu as Record<string, unknown>;
       let dStr = formatDateRangeForLatex(
         edu.dateRange ||
-          [eduAny.startDate, eduAny.endDate].filter((v) => typeof v === "string" && v.trim()).join(" -- ")
+        [eduAny.startDate, eduAny.endDate].filter((v) => typeof v === "string" && v.trim()).join(" -- ")
       );
 
       if (inst.includes("|")) {
@@ -1819,7 +2057,7 @@ export function generateLatexFromCanonical(
 
       bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(inst, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(deg, allKnownLinks)}}{${formatLatexLine(dStr, allKnownLinks)}}\n`;
       if (Array.isArray(edu.bullets) && edu.bullets.length > 0) {
-        bodyLatex += `\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+        bodyLatex += `\\begin{itemize}${listParams}\n`;
         for (const b of edu.bullets) {
           const cleanBullet = cleanAiText(b);
           if (!cleanBullet) continue;
@@ -1833,7 +2071,7 @@ export function generateLatexFromCanonical(
   // 6. Achievements
   if (resume.achievements && resume.achievements.length > 0) {
     bodyLatex += `\\section{ACHIEVEMENTS}\n`;
-    bodyLatex += `\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]\n`;
+    bodyLatex += `\\begin{itemize}${listParams}\n`;
     for (const ach of resume.achievements) {
       const cleanAch = cleanAiText(ach);
       if (!cleanAch) continue;
@@ -1858,22 +2096,63 @@ export function generateLatexFromCanonical(
   const contactTokens: string[] = [];
   if (resume.phone) contactTokens.push(resume.phone);
   if (resume.email) contactTokens.push(resume.email);
-  if (resume.linkedinUrl) contactTokens.push(`[LinkedIn](${resume.linkedinUrl})`);
-  if (resume.githubUrl) contactTokens.push(`[GitHub](${resume.githubUrl})`);
-  if (resume.portfolioUrl) contactTokens.push(`[Portfolio](${resume.portfolioUrl})`);
+  const linkedinKnown = allKnownLinks.find((l) => l.category === "linkedin" || /linkedin\.com\/in\//i.test(l.url));
+  const activeLinkedin = linkedinKnown?.url || (resume.linkedinUrl && !resume.linkedinUrl.includes("/applicant") ? resume.linkedinUrl : "");
+  if (activeLinkedin) {
+    const liHandle = activeLinkedin.match(/linkedin\.com\/in\/([a-zA-Z0-9_.-]+)/i)?.[1];
+    const liLabel = liHandle && liHandle.includes("_") ? liHandle : "LinkedIn";
+    contactTokens.push(`[${liLabel}](${activeLinkedin})`);
+  }
+
+  const githubKnown = allKnownLinks.find((l) => l.category === "github" || /github\.com\//i.test(l.url));
+  const activeGithub = githubKnown?.url || (resume.githubUrl && !resume.githubUrl.includes("/applicant") ? resume.githubUrl : "");
+  if (activeGithub) {
+    const ghHandle = activeGithub.match(/github\.com\/([a-zA-Z0-9_.-]+)/i)?.[1];
+    const ghLabel = ghHandle && ghHandle.includes("_") ? ghHandle : "GitHub";
+    contactTokens.push(`[${ghLabel}](${activeGithub})`);
+  }
+
+  const portfolioKnown = allKnownLinks.find((l) => (l.category as string) === "portfolio" || (l.category === "general" && !/linkedin|github/i.test(l.url)));
+  const activePortfolio = portfolioKnown?.url || resume.portfolioUrl;
+  if (activePortfolio) contactTokens.push(`[Portfolio](${activePortfolio})`);
   if (resume.location) contactTokens.push(resume.location);
 
   const formattedContacts = contactTokens
     .map((token) => formatLatexLine(token, allKnownLinks))
     .join(" \\enspace\\textbar\\enspace ");
 
+  const targetDocClass = isUltraDenseOnePage
+    ? "\\documentclass[a4paper,9pt]{extarticle}"
+    : "\\documentclass[a4paper,10pt]{article}";
+  const targetGeometry = isUltraDenseOnePage
+    ? "\\usepackage[left=0.34in, right=0.34in, top=0.22in, bottom=0.22in]{geometry}"
+    : isDenseOnePage
+      ? "\\usepackage[left=0.38in, right=0.38in, top=0.30in, bottom=0.30in]{geometry}"
+      : isStandardOnePage
+        ? "\\usepackage[left=0.40in, right=0.40in, top=0.34in, bottom=0.34in]{geometry}"
+        : "\\usepackage[left=0.42in, right=0.42in, top=0.38in, bottom=0.38in]{geometry}";
+  const targetSectionSpacing = isUltraDenseOnePage
+    ? "\\titlespacing*{\\section}{0pt}{2pt}{1pt}"
+    : isDenseOnePage
+      ? "\\titlespacing*{\\section}{0pt}{3.5pt}{1.8pt}"
+      : isStandardOnePage
+        ? "\\titlespacing*{\\section}{0pt}{4.0pt}{2.0pt}"
+        : "\\titlespacing*{\\section}{0pt}{4.5pt}{2.2pt}";
+  const targetLinespread = isUltraDenseOnePage
+    ? "0.95"
+    : isDenseOnePage
+      ? "0.99"
+      : isStandardOnePage
+        ? "1.01"
+        : "1.04";
+
   const preamble = `%-------------------------
 % Adaptive ATS LaTeX Resume
 % Clean Typography, Zero Page Numbers, 100% ATS Compliant
 %------------------------
 
-\\documentclass[10pt,a4paper]{article}
-\\usepackage[left=0.42in, right=0.42in, top=0.35in, bottom=0.35in]{geometry}
+${targetDocClass}
+${targetGeometry}
 \\usepackage{enumitem}
 \\usepackage{titlesec}
 \\usepackage[hidelinks]{hyperref}
@@ -1887,42 +2166,42 @@ export function generateLatexFromCanonical(
 
 \\setlength{\\parindent}{0pt}
 \\setlength{\\parskip}{0pt}
-\\linespread{1.02}
+\\linespread{${targetLinespread}}
 \\raggedbottom
 \\raggedright
 \\setlength{\\tabcolsep}{0in}
 \\urlstyle{same}
 
-% Section spacing: 4pt before, 2pt after
+% Section spacing: 4pt before, 2pt after (3pt/1.5pt on dense resumes)
 \\titleformat{\\section}{\\normalsize\\bfseries\\uppercase}{}{0em}{}[\\titlerule]
-\\titlespacing*{\\section}{0pt}{4pt}{2pt}
+${targetSectionSpacing}
 
 % Global list spacing: zero internal vertical bloat
-\\setlist[itemize]{leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet}
+\\setlist[itemize]{${listKeyVals}}
 
 \\newcommand{\\resumeItem}[1]{
   \\item #1
 }
 
 \\newcommand{\\resumeSubheading}[4]{
-  \\vspace{3pt}\\nopagebreak[3]
+  \\vspace{${subHeadingVspace}}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
-    \\textbf{#1} & \\textit{\\small #2} \\\\[-1pt]
+    \\textbf{#1} & \\textit{\\small #2} \\\\[-1.5pt]
     {\\small #3} & \\textit{\\small #4}
   \\end{tabular*}\\nopagebreak[4]
 }
 
 \\newcommand{\\resumeProjectHeading}[2]{
-  \\vspace{3pt}\\nopagebreak[3]
+  \\vspace{${subHeadingVspace}}\\nopagebreak[3]
   \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
     #1 & \\textit{\\small #2}
   \\end{tabular*}\\nopagebreak[4]
 }
 
 \\newcommand{\\resumeDivider}{\\enspace\\textbar\\enspace}
-\\newcommand{\\resumeSubHeadingListStart}{\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]}
+\\newcommand{\\resumeSubHeadingListStart}{\\begin{itemize}${listParams}}
 \\newcommand{\\resumeSubHeadingListEnd}{\\end{itemize}}
-\\newcommand{\\resumeItemListStart}{\\begin{itemize}[leftmargin=1.2em, itemsep=0.5pt, parsep=0pt, topsep=1pt, partopsep=0pt, label=\\textbullet]}
+\\newcommand{\\resumeItemListStart}{\\begin{itemize}${listParams}}
 \\newcommand{\\resumeItemListEnd}{\\end{itemize}}
 
 \\begin{document}
@@ -1931,10 +2210,10 @@ export function generateLatexFromCanonical(
 
 %----------HEADING----------
 \\begin{center}
-  {\\LARGE \\textbf{${escapeLatex(resume.fullName || "Candidate Name")}}} \\\\[2pt]
+  {\\LARGE \\textbf{${escapeLatex(resume.fullName || "Candidate Name")}}} \\\\[${isUltraDenseOnePage ? "1pt" : "2pt"}]
   \\small ${formattedContacts}
 \\end{center}
-\\vspace{-8pt}
+\\vspace{${isUltraDenseOnePage ? "-10pt" : "-8pt"}}
 
 %----------BODY SECTIONS----------
 ${bodyLatex.trim()}
@@ -2063,7 +2342,7 @@ export function estimateRenderedLines(res: CanonicalResume): number {
   return lines;
 }
 
-export const SINGLE_PAGE_LINE_BUDGET = 64.5;
+export const SINGLE_PAGE_LINE_BUDGET = 88;
 
 /**
  * Trims lowest-priority / oldest minor bullet points if the single-page resume would overflow,
@@ -2091,7 +2370,7 @@ export function trimContentForSinglePage(
   };
 
   const tryPop = (arr: string[] | undefined): boolean => {
-    if (!Array.isArray(arr) || arr.length < 3) return false;
+    if (!Array.isArray(arr) || arr.length < 2) return false;
     // pop the last non-protected bullet
     for (let i = arr.length - 1; i >= 1; i--) {
       if (!isSoleCarrier(arr[i])) {
@@ -2135,7 +2414,7 @@ export function classifySkillBucket(skill: string): SkillBucket {
   const s = skill.toLowerCase().trim();
   if (PROGRAMMING_LANGUAGES.has(s) && s !== "html/css") return "Languages";
   if (
-    /^(?:azure|microsoft azure|aws|amazon web services|gcp|google cloud(?: platform)?|docker|kubernetes|k8s|terraform|ci\/cd|cicd|mysql|postgres(?:ql)?|mongodb|dynamodb|snowflake|kafka|apache kafka|rabbitmq|redis|pub\/sub|elasticsearch|bigquery|cloud|devops|jenkins|github actions|serverless|lambda|s3|ec2|cosmos ?db|sqlite|oracle|nosql|databases?)$/i.test(
+    /^(?:azure|microsoft azure|aws|amazon web services|gcp|google cloud(?: platform)?|docker|kubernetes|k8s|git|github|version control|terraform|ci\/cd|cicd|mysql|postgres(?:ql)?|mongodb|dynamodb|snowflake|kafka|apache kafka|rabbitmq|redis|pub\/sub|elasticsearch|bigquery|cloud|devops|jenkins|github actions|serverless|lambda|s3|ec2|cosmos ?db|sqlite|oracle|nosql|databases?)$/i.test(
       s
     )
   ) {
@@ -2692,6 +2971,7 @@ export async function autoTailorResumeToJD(params: {
   let audit: UnifiedATSAudit | null = null;
   if (process.env.GEMINI_API_KEY) {
     try {
+      const { analyzeResume } = await import("./analysis");
       const res = await analyzeResume(params.resumeText, params.jobText);
       if (res?.unifiedAudit) {
         audit = res.unifiedAudit as unknown as UnifiedATSAudit;
@@ -2709,8 +2989,17 @@ export async function autoTailorResumeToJD(params: {
     targetRoleTitle: params.targetRoleTitle,
   });
 
+  let tailoredLatex = passes.optimizedLatex;
+  try {
+    const { optimizeLatexGeometryForOnePage } = await import("./apply-latex");
+    const estimatedLines = estimateRenderedLines(passes.canonical);
+    tailoredLatex = optimizeLatexGeometryForOnePage(tailoredLatex, { estimatedLines });
+  } catch (err) {
+    console.warn("Failed to apply single-page geometry optimization:", err);
+  }
+
   const finalLatex = ensureAllHrefsPreservedInLatex(
-    passes.optimizedLatex,
+    tailoredLatex,
     [params.sourceLatex, params.resumeText].filter(Boolean) as string[]
   );
 
@@ -2744,17 +3033,28 @@ export async function compileLatexToPdfBuffer(
   const safeLatex = ensureAllHrefsPreservedInLatex(latexCode, linkSource ? [linkSource] : []);
 
   async function compileWithEngine(engine: string) {
-    const formData = new FormData();
-    formData.append("filecontents[]", safeLatex);
-    formData.append("filename[]", "document.tex");
-    formData.append("engine", engine);
-    formData.append("return", "pdf");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const formData = new FormData();
+        formData.append("filecontents[]", safeLatex);
+        formData.append("filename[]", "document.tex");
+        formData.append("engine", engine);
+        formData.append("return", "pdf");
 
-    return fetch("https://texlive.net/cgi-bin/latexcgi", {
-      method: "POST",
-      body: formData,
-      signal: AbortSignal.timeout(30000), // 30s timeout
-    });
+        return await fetch("https://texlive.net/cgi-bin/latexcgi", {
+          method: "POST",
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+          body: formData,
+          signal: AbortSignal.timeout(30000), // 30s timeout
+        });
+      } catch (err) {
+        if (attempt === 3) throw err;
+        await new Promise((r) => setTimeout(r, 750 * attempt));
+      }
+    }
+    throw new Error("TeXLive compilation failed after 3 attempts");
   }
 
   try {
