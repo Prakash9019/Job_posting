@@ -19,12 +19,27 @@ export async function POST(req: NextRequest) {
     }
 
     const { approveAndSend } = validated.data;
-    const draftIds = [...new Set(validated.data.draftIds)];
+    const requestedIds = [...new Set(validated.data.draftIds)];
     const senderEmail = typeof body.senderEmail === "string" ? body.senderEmail : undefined;
 
-    // Verify ownership of every single draft before proceeding
-    for (const draftId of draftIds) {
-      await assertDraftAccess(draftId, userId);
+    // Verify ownership of every draft. Drafts that no longer exist (deleted/regenerated
+    // since the page loaded) are reported per-draft instead of failing the whole request.
+    const missingIds: string[] = [];
+    const draftIds: string[] = [];
+    for (const draftId of requestedIds) {
+      try {
+        await assertDraftAccess(draftId, userId);
+        draftIds.push(draftId);
+      } catch (err) {
+        if (err instanceof AuthError && err.statusCode === 404) missingIds.push(draftId);
+        else throw err;
+      }
+    }
+    if (draftIds.length === 0 && missingIds.length > 0) {
+      return NextResponse.json(
+        { success: false, error: "These drafts no longer exist. Refresh the page and select them again.", missingDraftIds: missingIds },
+        { status: 410 }
+      );
     }
 
     const profile = await prisma.user.findUnique({ where: { id: userId } });
@@ -42,7 +57,10 @@ export async function POST(req: NextRequest) {
     }[] = [];
 
     let successCount = 0;
-    let failureCount = 0;
+    let failureCount = missingIds.length;
+    for (const draftId of missingIds) {
+      results.push({ draftId, success: false, error: "Draft no longer exists. Refresh and retry." });
+    }
 
     // Send messages sequentially or bounded concurrency to respect Gmail rate limits
     for (const draftId of draftIds) {
@@ -81,11 +99,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: failureCount === 0,
-      total: draftIds.length,
+      total: requestedIds.length,
       successCount,
       failureCount,
       results,
-      summary: `Sent ${successCount} of ${draftIds.length} emails. ${failureCount > 0 ? `${failureCount} failed.` : "All succeeded."}`,
+      summary: `Sent ${successCount} of ${requestedIds.length} emails. ${failureCount > 0 ? `${failureCount} failed.` : "All succeeded."}`,
     });
   } catch (error: unknown) {
     if (error instanceof AuthError) {

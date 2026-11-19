@@ -252,9 +252,22 @@ export default function DashboardPage() {
         }),
       });
 
-      const data = await res.json();
+      const raw = await res.text();
+      let data: {
+        success?: boolean;
+        error?: string;
+        summary?: string;
+        results?: { success: boolean; error?: string }[];
+        failureCount: number;
+        successCount?: number;
+      } = { failureCount: 0 };
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        // Non-JSON body (e.g. platform 404 page): surface status instead of a parse error.
+      }
       if (!res.ok || (!data.success && !Array.isArray(data.results))) {
-        throw new Error(data.error || data.summary || "Failed to send emails");
+        throw new Error(data.error || data.summary || `Send failed (HTTP ${res.status} from ${res.url}): ${raw.slice(0, 200)}`);
       }
 
       setNotification({
