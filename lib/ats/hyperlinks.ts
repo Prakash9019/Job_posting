@@ -95,7 +95,6 @@ export function createCanonicalResume(raw?: unknown): CanonicalResume {
 /**
  * Post-OCR regex and deterministic sanitization pass to fix common token errors:
  * - \bAl\b -> AI
- * - Vertz -> Vertx
  * - Dangling metrics (lone %, empty bracket placeholders)
  * - Duplicate text blocks (e.g. repeated education lines, identical consecutive sentences)
  */
@@ -105,8 +104,6 @@ export function sanitizeOcrText(text: string): string {
   let cleaned = text;
 
   // 1. Common OCR token error fixes
-  cleaned = cleaned.replace(/\bVertz\b/gi, "Vertx");
-  cleaned = cleaned.replace(/\bVertr\b/gi, "Vertx");
   cleaned = cleaned.replace(/\bAl\b/g, "AI");
   cleaned = cleaned.replace(/\bGenAl\b/gi, "GenAI");
   cleaned = cleaned.replace(/\bAl-powered\b/gi, "AI-Powered");
@@ -1255,7 +1252,13 @@ export function ensureAllHrefsPreservedInLatex(
           tokens.push(`\\href{${link.url}}{\\underline{${escapeLatexLabel(anchor)}}}`);
           addUrlToSet(createdUrls, link.url);
           currentDoc = currentDoc.replace(projHeadingRegex, (m, p1, p2, p3) => {
-            const replacedP2 = p2.replace(new RegExp(`(?<![/a-zA-Z0-9])${escaped}(?![/a-zA-Z0-9])`), ` \\enspace\\textbar\\enspace XATSTOKEN${id}X`);
+            // Only add a separator when the label trails a title; a label that starts its own cell
+            // (e.g. the right-hand "Code | Live Demo" group) must stay flush.
+            const replacedP2 = p2.replace(new RegExp(`(?<![/a-zA-Z0-9])${escaped}(?![/a-zA-Z0-9])`), (_m: string, offset: number) => {
+              const before = p2.slice(0, offset).replace(/\\textup\{\s*$/, "").trim();
+              const needsSep = before.length > 0 && !/(?:\\textbar|\|)$/.test(before);
+              return `${needsSep ? " \\enspace\\textbar\\enspace " : ""}XATSTOKEN${id}X`;
+            });
             return `${p1}${replacedP2}${p3}`;
           });
           continue;

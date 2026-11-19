@@ -149,7 +149,7 @@ Your task is to audit the provided [RESUME_TEXT] (and optional [JOB_DESCRIPTION_
      3. STRICT CONSTRAINTS:
         - Weave at most 1–2 target JD skills per bullet (max 3–4 across the entire resume) where they fit the project's technical domain naturally.
         - Use proper Oxford commas ("using Python, FastAPI, and ZeroMQ") — NEVER chain skills with "and ... and ...".
-        - Keep all company names (Julley Online Private Limited, Vertx), dates, subproject titles, and quantitative metrics (42%, 28%, 35%, 500K+, 99.9%, 38%) 100% intact.
+        - Keep every company name, date, subproject title, and quantitative metric exactly as written in the candidate's own resume. Never move a technology, metric, or achievement from one project to another, even within the same employer.
         - Never prepend a second action verb if the bullet already starts with a past-tense action verb.
 
 3. GOOGLE XYZ / PAR (PROBLEM-ACTION-RESULT) BULLET REWRITES & JD LANGUAGE MIRRORING:
@@ -158,6 +158,7 @@ Your task is to audit the provided [RESUME_TEXT] (and optional [JOB_DESCRIPTION_
      * Act as a senior recruiter in the candidate's target industry.
      * When a target Job Description is provided, rewrite candidate bullet points to mirror the specific language, technical vocabulary, and keywords in the job description without lying. Many resumes get overlooked simply because they don't match the language recruiters and ATS filters are searching for.
      * Keep it strictly truthful to the candidate's actual experience. The AI does not invent experience; it highlights the impact the candidate has already made.
+     * ROLE POSITIONING: First identify the exact role the JD hires for (Full Stack, AI, Backend, Frontend, Forward Deployed, Hardware/Software Integration, etc.). Prioritize bullets whose real work demonstrates THAT role and phrase them in that role's vocabulary (e.g. end-to-end ownership and APIs for Full Stack; models and pipelines for AI). Do not force AI/Computer Vision framing into non-AI roles, and do not downplay it for roles where it is relevant. Never claim a technology in a bullet unless the original bullet or resume already supports it.
    - FORMULA & IMPACT: Rewrite each bullet using Google XYZ / PAR: "Accomplished [X] as measured by [Y], by doing [Z]" starting with a strong past-tense action verb (Architected, Engineered, Orchestrated, Optimized, Automated).
    - FACT-PRESERVATION GUARDRAIL: NEVER invent fake metrics or hallucinate technologies. If a bullet lacks numbers in the resume, insert bracketed placeholders like [X]%, [X] ms, or $[X]K so the candidate can supply verified metrics.
    - EXACT STRING MATCHING: original_bullet MUST be an exact, character-for-character substring copied from the resume text so the frontend .replace() button works.
@@ -191,7 +192,7 @@ export async function analyzeResume(resumeText: string, jobText: string) {
     "gemini-2.5-flash", // Fast fallback
   ].filter(Boolean))) as string[];
 
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 120000 } });
   let lastError: Error | null = null;
   let responseText = "";
   let resolvedModel = candidateModels[0];

@@ -3,8 +3,8 @@ import { prisma } from "@/lib/db/prisma";
 import { getStorageProvider } from "@/lib/storage";
 import { extractFromScreenshot, generateApplicationEmail } from "@/lib/ai/gemini";
 import { ExtractionCategory } from "@/lib/validation/schemas";
-import { getReadableResumeText, isReadableResumeText, JobTargetProfile } from "@/lib/ai/resume";
-import { autoTailorResumeToJD } from "@/lib/ats/tailor";
+import { getReadableResumeText, isReadableResumeText, knownRoleTitle, JobTargetProfile } from "@/lib/ai/resume";
+import { autoTailorResumeToJD, type CanonicalResume } from "@/lib/ats/tailor";
 import { extractCompetencyMatrix } from "@/lib/ats/parse";
 import { compileValidatedPdf } from "@/lib/ats/pdf-artifact";
 
@@ -158,7 +158,16 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
       extraction.recipientEmail &&
       /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(extraction.recipientEmail.trim());
 
-    if (hasValidEmail) {
+    // Role used for tailoring and the email: the stated title, else the role inferred from the post content.
+    const roleTitle = extraction.jobTitle || extraction.inferredRoleTitle || null;
+
+    // An incomplete post (title/JD missing or clipped, or text from another screen region discarded) must never be
+    // tailored/emailed from guesses: the reason is already saved in manualReviewReason for the reviewer.
+    if (extraction.incompleteJobPost) {
+      console.warn(`Screenshot ${screenshot.id}: incomplete job post, skipping tailoring and email draft: ${extraction.manualReviewReason}`);
+    }
+
+    if (hasValidEmail && !extraction.incompleteJobPost) {
       // Find active resume for user if batch doesn't have one or if current one is unreadable
       let resume = screenshot.batch.resume;
       if (!resume || !isReadableResumeText(resume.extractedText)) {
@@ -209,7 +218,7 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
           }
 
           const jobText = [
-            extraction.jobTitle,
+            roleTitle,
             extraction.companyName,
             extraction.jobDescription,
             extraction.requiredSkills ? `Required Skills: ${extraction.requiredSkills}` : "",
@@ -237,7 +246,7 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
           let effectiveResumeId = resume.id;
           let generationStatus = "GENERATED";
           let effectiveResumeText = resumeText;
-          let tailoredCanonical: any = undefined;
+          let tailoredCanonical: CanonicalResume | undefined = undefined;
           let tailoredFilename: string | undefined = undefined;
 
           // Extract competency matrix (primaryTechStack 2.0x, architectureAndDomainKeywords 1.5x, coreResponsibilities 1.0x)
@@ -249,9 +258,9 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
             const tailored = await autoTailorResumeToJD({
               resumeText,
               sourceLatex,
-              jobText: jobText || `${extraction.jobTitle || "Role"} at ${extraction.companyName || "Company"}`,
+              jobText: jobText || `${roleTitle || "Role"} at ${extraction.companyName || "Company"}`,
               companyName: extraction.companyName || undefined,
-              targetRoleTitle: extraction.jobTitle || undefined,
+              targetRoleTitle: roleTitle || undefined,
             });
 
             effectiveResumeText = tailored.optimizedText;
@@ -292,12 +301,12 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
 
           const jobProfile: JobTargetProfile = {
             companyName: extraction.companyName || "Company",
-            targetRoleTitle: extraction.jobTitle || "Software Engineer",
+            targetRoleTitle: knownRoleTitle(roleTitle),
             recipientEmail: extraction.recipientEmail?.trim(),
             hiringManagerName: extraction.contactName || undefined,
             primaryTechStack: primaryTech.length > 0 ? primaryTech : (extraction.requiredSkills || []),
             architectureAndDomainKeywords: archDomain,
-            targetRole: extraction.jobTitle || "Software Engineer",
+            targetRole: knownRoleTitle(roleTitle),
             targetStack: primaryTech.length > 0 ? primaryTech : (extraction.requiredSkills || []),
           };
 
@@ -306,7 +315,6 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
             jobProfile,
             canonicalResume: tailoredCanonical,
             attachmentFilename: tailoredFilename,
-            screenshot: { content: imageBuffer, mimeType: screenshot.mimeType },
             resumeText: effectiveResumeText,
             senderName: screenshot.batch.user.name || "Applicant",
             senderEmail: screenshot.batch.user.email || undefined,
@@ -321,7 +329,7 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
                 userId: screenshot.batch.userId,
                 resumeId: effectiveResumeId,
                 companyName: extraction.companyName || "Company",
-                jobTitle: extraction.jobTitle || "Job Opening",
+                jobTitle: roleTitle || "Job Opening",
                 recipientEmail: extraction.recipientEmail!.trim(),
                 subject: generatedDraft.subject,
                 body: generatedDraft.body,
@@ -393,7 +401,7 @@ export async function processBatch(
 
   const pendingScreenshots = batch.screenshots.filter(
     (s) => s.status === "PENDING" || (s.status === "FAILED" && s.retryCount < MAX_RETRIES) || (s.status === "PROCESSING" && s.updatedAt.getTime() < Date.now() - 10 * 60 * 1000)
-  ).slice(0, 3);
+  ).slice(0, Math.max(concurrencyLimit, 1) * 2); // bounded work per request (serverless time limit); the client loops until done
 
   let processedCount = batch.screenshots.filter(s => s.status === "COMPLETED").length;
   let failedCount = batch.screenshots.filter(s => s.status === "FAILED").length;

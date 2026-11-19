@@ -59,6 +59,11 @@ export function optimizeLatexGeometryForOnePage(
 ): string {
   if (!latex || !latex.includes("\\documentclass")) return latex;
 
+  // Documents produced by the shared canonical layout engine (generateLatexFromCanonical) already
+  // carry a content-calibrated layout. Re-tiering them here with different heuristics is what made
+  // pagination differ between candidates, so they must pass through untouched.
+  if (latex.includes("ATS-SHARED-LAYOUT-ENGINE")) return latex;
+
   let doc = latex;
 
   // 1. Ensure raw ASCII asterisks in bullet points are normalized to standard items
@@ -488,7 +493,7 @@ export function patchLatexTemplateDeterministically(
  * Validates and compiles the output via TeXLive CGI to guarantee a 100% functional, downloadable PDF.
  */
 export async function applyImprovementsToLatexWithAI(params: ApplyLatexParams): Promise<ApplyLatexResult> {
-  // Sanitize input text: fix OCR errors (Al→AI, Vertz→Vertx) BEFORE passing to remediation passes
+  // Sanitize input text: fix OCR errors (Al→AI) BEFORE passing to remediation passes
   const sanitizedText = sanitizeOcrText(params.atsOptimizedText || "");
 
   // If original LaTeX is provided, extract any known links
@@ -589,7 +594,7 @@ ${params.jobText ? `[TARGET_JOB_DESCRIPTION]:\n${params.jobText}\n` : ""}
 
 CRITICAL RULES:
 1. 100% TEMPLATE FORMAT PRESERVATION: Keep the original preamble (\\documentclass, \\usepackage, \\geometry, \\newcommand, \\def, custom macros, colors, fonts, section formatting). DO NOT replace the visual layout with a generic template. The original LaTeX template is the absolute structural source of truth.
-2. SURGICALLY UPDATE CONTENT ONLY: In the body, replace existing bullet points with the improved ATS PAR action verb bullets, update the skills with any missing target job keywords, and update the summary if provided. Keep the exact macro commands (e.g. \\resumeSubheading, \\resumeItem, \\item) used by the template.
+2. SURGICALLY UPDATE CONTENT ONLY: In the body, replace existing bullet points with the improved ATS PAR action verb bullets and update the summary if provided. The ATS_OPTIMIZED_CONTENT already contains the verified Technical Skills: keep EVERY existing skill, bullet, project, certification and education entry (never delete or shorten original information), and do NOT add any technology, skill or responsibility that is not already in ATS_OPTIMIZED_CONTENT. Keep the exact macro commands (e.g. \\resumeSubheading, \\resumeItem, \\item) used by the template.
 3. HYPERLINK INTEGRITY: All \\href{url}{label} links, GitHub, LinkedIn, email, and project links from the original template must remain intact.
 4. COMPILABLE OUTPUT ONLY: Return ONLY compilable LaTeX code. Do NOT output markdown code fences (\`\`\`latex or \`\`\`), do NOT output any explanations or commentary. Start with the \\documentclass line and end with \\end{document}.`;
 

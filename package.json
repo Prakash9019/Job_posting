@@ -21,6 +21,7 @@
     "test:formatting": "node --import tsx scripts/test-resume-formatting-regression.ts",
     "test:reference": "node --env-file=.env --import tsx scripts/test-reference-resume-regression.ts",
     "test:artifact": "node --env-file=.env --import tsx scripts/test-pdf-artifact-integrity.ts",
+    "test:regions-email": "node --import tsx scripts/test-region-and-email-format-regression.ts",
     "test:vaco": "node --env-file=.env --import tsx scripts/test-vaco-agentic-ai-regression.ts"
   },
   "dependencies": {

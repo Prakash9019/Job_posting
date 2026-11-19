@@ -84,14 +84,14 @@ Infrastructure: \`Docker\`, \`Kubernetes\`, AWS, Terraform, CI/CD
   // Case A: Pipe with Org, Loc, Role (3 parts + date)
   const caseA = `Google, LLC | Mountain View, CA | Senior Software Engineer | May 2020 - Present`;
   const latexA = generateATSLatex(`John Doe\njohn@example.com\nWORK EXPERIENCE\n${caseA}\n• Built scalable services.`);
-  assert(latexA.includes("{Google, LLC}{Mountain View, CA}"), "Pattern A must place Company Top-Left and Location Top-Right");
-  assert(latexA.includes("{Senior Software Engineer}{May 2020 -- Present}"), "Pattern A must place Role Bottom-Left and Date Bottom-Right");
+  assert(latexA.includes("{Senior Software Engineer}{Mountain View, CA}"), "Pattern A must place Role Top-Left and Location Top-Right (shared layout: Row 1 = Role | Location)");
+  assert(latexA.includes("{Google, LLC}{May 2020 -- Present}"), "Pattern A must place Company Bottom-Left and Date Bottom-Right (Row 2 = Company | Date)");
 
   // Case B: Pipe with Role first, then Org, then Location
   const caseB = `Staff Infrastructure Engineer | Stripe, Inc. | San Francisco, CA | Jan 2019 - Apr 2022`;
   const latexB = generateATSLatex(`John Doe\njohn@example.com\nWORK EXPERIENCE\n${caseB}\n• Built payment APIs.`);
-  assert(latexB.includes("{Stripe, Inc.}{San Francisco, CA}"), "Pattern B must place Company Top-Left and Location Top-Right");
-  assert(latexB.includes("{Staff Infrastructure Engineer}{Jan 2019 -- Apr 2022}"), "Pattern B must place Role Bottom-Left and Date Bottom-Right");
+  assert(latexB.includes("{Staff Infrastructure Engineer}{San Francisco, CA}"), "Pattern B must place Role Top-Left and Location Top-Right");
+  assert(latexB.includes("{Stripe, Inc.}{Jan 2019 -- Apr 2022}"), "Pattern B must place Company Bottom-Left and Date Bottom-Right");
 
   // Case C: Corporate suffixes preserved on comma separation
   const parsedOrgLoc1 = parseOrgAndLoc("Acme Corp, Inc.");

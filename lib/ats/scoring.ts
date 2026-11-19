@@ -9,6 +9,8 @@ export type Requirement = {
   jobEvidence: string;
   category?: RequirementCategory;
   weightMultiplier?: number;
+  /** Set when the JD offers this skill as one of several alternatives ("Python or Java or Go"). */
+  alternativeGroup?: string;
 };
 export type ResumeLine = { number: number; text: string; section: string };
 export type Finding = { severity: "high" | "medium" | "low"; line: number | null; quote: string; issue: string; suggestion: string };
@@ -443,8 +445,22 @@ const CORE_RESPONSIBILITIES = new Set([
   "ci/cd", "agile", "sql", "git", "linux",
 ]);
 
+const PREFERRED_HEADING_RE = /^(?:#{1,3}\s*)?(?:preferred|nice[\s-]to[\s-]have|good[\s-]to[\s-]have|bonus|desirable|optional|pluses|extra credit|additional (?:skills|qualifications))\b[^.]{0,50}:?$/i;
+const REQUIRED_HEADING_RE = /^(?:#{1,3}\s*)?(?:required|requirements?|must[\s-]have|mandatory|minimum|basic qualifications|what you(?:'|’)?ll need|what we(?:'|’)?re looking for|qualifications|key skills)\b[^.]{0,50}:?$/i;
+const PREFERRED_INLINE_RE = /\b(?:preferred|nice[\s-]to[\s-]have|good[\s-]to[\s-]have|a plus|is a plus|bonus|desirable)\b/i;
+
+function termRegexSource(term: string): string {
+  const escaped = [...term].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
+  return "(^|[^a-z0-9+#])" + escaped + "(?=$|[^a-z0-9+#])";
+}
+
 /**
- * Deterministically extracts technical requirements from Job Description text using the synonym taxonomy.
+ * Extracts technical requirements from the supplied Job Description text only.
+ * - A skill is reported only when the JD itself mentions it (or a synonym from the taxonomy).
+ * - required/preferred follows the JD's own structure: skills under "Preferred / Nice to have" headings
+ *   (or marked "a plus") are preferred; skills under "Requirements / Must have" headings are required;
+ *   otherwise the legacy rule applies (mentioned 2+ times => required).
+ * - Skills the JD offers as alternatives ("Python or Java or Go") share an alternativeGroup.
  */
 export function extractRequirementsFromJobText(jobText: string): Requirement[] {
   if (!jobText || !jobText.trim()) return [];
@@ -452,37 +468,98 @@ export function extractRequirementsFromJobText(jobText: string): Requirement[] {
   const extracted: Requirement[] = [];
   const seen = new Set<string>();
 
+  // Per-line context: "required" | "preferred" | "neutral"
+  const jdLines = jobText.replace(/\r\n?/g, "\n").split("\n");
+  const lineModes: ("required" | "preferred" | "neutral")[] = [];
+  let mode: "required" | "preferred" | "neutral" = "neutral";
+  for (const raw of jdLines) {
+    const t = raw.trim();
+    if (t && t.length <= 70) {
+      if (PREFERRED_HEADING_RE.test(t)) mode = "preferred";
+      else if (REQUIRED_HEADING_RE.test(t)) mode = "required";
+      else if (/:\s*$/.test(t) && !/^[-*•]/.test(t)) mode = "neutral";
+    }
+    lineModes.push(PREFERRED_INLINE_RE.test(t) ? "preferred" : mode);
+  }
+
+  const groupOf = new Map<string, string>(); // canonical -> alternative group id
+  let nextGroup = 0;
+  const allTerms: { term: string; canonical: string }[] = [];
+  for (const group of aliases) for (const term of group) allTerms.push({ term, canonical: group[0] });
+
+  for (const raw of jdLines) {
+    const low = raw.toLowerCase();
+    if (!/\bor\b|\//.test(low)) continue;
+    const hits: { start: number; end: number; canonical: string }[] = [];
+    for (const { term, canonical } of allTerms) {
+      if (term.length < 2) continue;
+      const re = new RegExp(termRegexSource(term), "gi");
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(low))) {
+        const start = m.index + m[1].length;
+        hits.push({ start, end: start + term.length, canonical });
+        if (m.index === re.lastIndex) re.lastIndex++;
+      }
+    }
+    hits.sort((a, b) => a.start - b.start || b.end - a.end);
+    let chain: typeof hits = [];
+    let chainHasOr = false;
+    const flush = () => {
+      const canon = [...new Set(chain.map((h) => h.canonical))];
+      if (chainHasOr && canon.length >= 2) {
+        const id = canon.map((c) => groupOf.get(c)).find(Boolean) || `alt-${nextGroup++}`;
+        canon.forEach((c) => groupOf.set(c, id));
+      }
+      chain = [];
+      chainHasOr = false;
+    };
+    for (const h of hits) {
+      const prev = chain[chain.length - 1];
+      if (!prev) { chain = [h]; continue; }
+      if (h.start < prev.end) continue; // overlapping synonym of the same mention
+      const gap = low.slice(prev.end, h.start);
+      if (/^\s*(?:,\s*)?(?:or|\/)\s*$/.test(gap)) { chainHasOr = true; chain.push(h); }
+      else if (/^\s*,\s*$/.test(gap)) chain.push(h);
+      else { flush(); chain = [h]; }
+    }
+    flush();
+  }
+
   // Scan all 50+ canonical tech families in aliases deterministically
   for (const group of aliases) {
     const canonical = group[0];
     if (seen.has(canonical)) continue;
-    const matched = group.some((term) => {
-      const escaped = [...term].map((c) => (/[a-z0-9 ]/i.test(c) ? c : "\\" + c)).join("");
-      return new RegExp("(^|[^a-z0-9+#])" + escaped + "(?=$|[^a-z0-9+#])", "i").test(cleanJD);
-    });
-    if (matched) {
-      seen.add(canonical);
-      // Count occurrences in JD: if mentioned 2+ times or near "required/must", mark as required
-      const occ = countKeywordOccurrences(cleanJD, canonical);
+    const termRes = group.map((term) => new RegExp(termRegexSource(term), "i"));
+    if (!termRes.some((re) => re.test(cleanJD))) continue;
+    seen.add(canonical);
 
-      let category: RequirementCategory = "primaryTechStack";
-      let weightMultiplier = 2.0;
-      if (ARCHITECTURE_AND_DOMAIN.has(canonical)) {
-        category = "architectureAndDomainKeywords";
-        weightMultiplier = 1.5;
-      } else if (CORE_RESPONSIBILITIES.has(canonical)) {
-        category = "coreResponsibilities";
-        weightMultiplier = 1.0;
-      }
+    const modes = jdLines
+      .map((l, i) => (termRes.some((re) => re.test(l.toLowerCase())) ? lineModes[i] : null))
+      .filter((m): m is "required" | "preferred" | "neutral" => m !== null);
+    const occ = countKeywordOccurrences(cleanJD, canonical);
+    let importance: "required" | "preferred";
+    if (modes.includes("required")) importance = "required";
+    else if (modes.length > 0 && modes.every((m) => m === "preferred")) importance = "preferred";
+    else importance = occ >= 2 ? "required" : "preferred";
 
-      extracted.push({
-        keyword: formatSkillDisplay(canonical),
-        importance: occ >= 2 ? "required" : "preferred",
-        jobEvidence: "Deterministically matched in Job Description",
-        category,
-        weightMultiplier,
-      });
+    let category: RequirementCategory = "primaryTechStack";
+    let weightMultiplier = 2.0;
+    if (ARCHITECTURE_AND_DOMAIN.has(canonical)) {
+      category = "architectureAndDomainKeywords";
+      weightMultiplier = 1.5;
+    } else if (CORE_RESPONSIBILITIES.has(canonical)) {
+      category = "coreResponsibilities";
+      weightMultiplier = 1.0;
     }
+
+    extracted.push({
+      keyword: formatSkillDisplay(canonical),
+      importance,
+      jobEvidence: "Deterministically matched in Job Description",
+      category,
+      weightMultiplier,
+      ...(groupOf.has(canonical) ? { alternativeGroup: groupOf.get(canonical) } : {}),
+    });
   }
   return extracted;
 }
@@ -826,8 +903,16 @@ export function scoreResume(text: string, requirements: Requirement[] = [], rawJ
     };
   });
 
-  const denominator = matches.reduce((sum, r) => sum + r.weight, 0);
-  const matchScore = denominator ? Math.round(100 * matches.reduce((sum, r) => sum + r.multiplier * r.weight, 0) / denominator) : null;
+  // Optional alternatives ("Python or Java or Go"): once the candidate covers one alternative, the
+  // remaining unmatched alternatives are not penalized.
+  const satisfiedGroups = new Set(
+    matches.filter((m) => m.alternativeGroup && m.matched).map((m) => m.alternativeGroup as string)
+  );
+  const scoredMatches = matches.filter(
+    (m) => !(m.alternativeGroup && satisfiedGroups.has(m.alternativeGroup) && !m.matched)
+  );
+  const denominator = scoredMatches.reduce((sum, r) => sum + r.weight, 0);
+  const matchScore = denominator ? Math.round(100 * scoredMatches.reduce((sum, r) => sum + r.multiplier * r.weight, 0) / denominator) : null;
 
   // Composite: if JD provided, blend 45% standalone + 55% match; else 100% standalone
   const compositeScore = matchScore !== null
@@ -841,8 +926,8 @@ export function scoreResume(text: string, requirements: Requirement[] = [], rawJ
     s >= 85 ? "EXCELLENT" : s >= 70 ? "GOOD" : s >= 55 ? "AVERAGE" : "POOR";
 
   // 1. Jobscan / SkillSyncer (Enterprise Keyword Matcher)
-  const strictMatchScore = matches.length > 0
-    ? Math.round(100 * matches.filter(m => m.placement === "Skills + experience").length / matches.length)
+  const strictMatchScore = scoredMatches.length > 0
+    ? Math.round(100 * scoredMatches.filter(m => m.placement === "Skills + experience").length / scoredMatches.length)
     : (matchScore ?? 65);
   const hasTargetTitle = lines.slice(0, 10).some(l =>
     /(?:software|frontend|backend|full[\s-]?stack|engineer|developer|architect|data|devops|cloud|analyst|manager|specialist|consultant)\b/i.test(l.text)

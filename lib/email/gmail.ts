@@ -289,7 +289,7 @@ export async function sendEmailDraft(params: {
   const existingSent = await prisma.sendAttempt.findFirst({
     where: {
       draftId,
-      status: "SENT",
+      status: { in: ["SENT", "SENDING", "UNKNOWN"] },
     },
   });
 

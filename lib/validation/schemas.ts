@@ -37,6 +37,23 @@ export const GeminiExtractionSchema = z.object({
   evidenceText: z.string().trim().nullable().catch(null),
   confidence: ConfidenceEnum.default("MEDIUM"),
   manualReviewReason: z.string().trim().nullable().catch(null),
+  // Screen-region understanding (screenshots only). Optional so text/manual extractions stay valid.
+  regions: z.array(z.object({
+    kind: z.enum(["JOB_POST", "OTHER"]).catch("OTHER"),
+    description: z.string().trim().catch(""),
+    text: z.string().trim().catch(""),
+  })).optional().catch(undefined),
+  /** SINGLE_WINDOW = one application fills the screenshot; SPLIT_SCREEN = several windows/apps are visible. */
+  screenLayout: z.enum(["SINGLE_WINDOW", "SPLIT_SCREEN"]).nullable().optional().catch(null),
+  jobPostText: z.string().trim().nullable().optional().catch(null),
+  jobTitleEvidence: z.string().trim().nullable().optional().catch(null),
+  jobPostComplete: z.boolean().nullable().optional().catch(null),
+  /** Set by the region guards: title/JD missing or clipped, so no tailored application may be generated. */
+  incompleteJobPost: z.boolean().optional().catch(undefined),
+  /** Title not visible but the post is otherwise usable: draft is created with neutral role wording and a review note. */
+  titleUnknown: z.boolean().optional().catch(undefined),
+  /** Role the post is clearly hiring for, inferred from its content, ONLY when no title is stated (e.g. "AI/ML Engineer"). */
+  inferredRoleTitle: z.string().trim().nullable().optional().catch(null),
 });
 
 export type GeminiExtraction = z.infer<typeof GeminiExtractionSchema>;

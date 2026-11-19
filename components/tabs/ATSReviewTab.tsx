@@ -2225,7 +2225,11 @@ export default function ATSReviewTab({ resumes }: { resumes: Resume[] }) {
                             </button>
                           ))
                         ) : (
-                          <span className="text-xs text-slate-400 italic">All skills mentioned in experience!</span>
+                          <span className="text-xs text-slate-400 italic">
+                            {satisfiedSkills.length > 0 && missingSkillsList.length === 0
+                              ? "All skills mentioned in experience!"
+                              : "None."}
+                          </span>
                         )}
                       </div>
                     </div>

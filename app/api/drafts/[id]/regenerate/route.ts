@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { generateApplicationEmail } from "@/lib/ai/gemini";
 import { getStorageProvider } from "@/lib/storage";
-import { getReadableResumeText, JobTargetProfile } from "@/lib/ai/resume";
+import { getReadableResumeText, knownRoleTitle, JobTargetProfile } from "@/lib/ai/resume";
 import { requireUser, assertDraftAccess, AuthError } from "@/lib/auth/authorization";
 import { autoTailorResumeToJD } from "@/lib/ats/tailor";
 import { compileValidatedPdf } from "@/lib/ats/pdf-artifact";
@@ -150,12 +150,12 @@ export async function POST(
 
     const jobProfile: JobTargetProfile = {
       companyName: jobDetails.companyName || "Company",
-      targetRoleTitle: jobDetails.jobTitle || "Software Engineer",
+      targetRoleTitle: knownRoleTitle(jobDetails.jobTitle),
       recipientEmail: jobDetails.recipientEmail || undefined,
       hiringManagerName: jobDetails.contactName || undefined,
       primaryTechStack: primaryTech.length > 0 ? primaryTech : (jobDetails.requiredSkills || []),
       architectureAndDomainKeywords: archDomain,
-      targetRole: jobDetails.jobTitle || "Software Engineer",
+      targetRole: knownRoleTitle(jobDetails.jobTitle),
       targetStack: primaryTech.length > 0 ? primaryTech : (jobDetails.requiredSkills || []),
     };
 

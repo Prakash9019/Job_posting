@@ -84,10 +84,16 @@ export async function POST(req: NextRequest) {
 
       try {
         const extracted = await extractFromScreenshot(screenshotBuffer, screenshotMime);
+        if (extracted?.incompleteJobPost && !jobTitle) {
+          return NextResponse.json(
+            { success: false, error: extracted.manualReviewReason || "The job post in this screenshot is incomplete. Please upload another screenshot showing the full post." },
+            { status: 422 }
+          );
+        }
         if (extracted) {
           if (!recipientEmail && extracted.recipientEmail) recipientEmail = extracted.recipientEmail.trim();
           if (!companyName && extracted.companyName) companyName = extracted.companyName.trim();
-          if (!jobTitle && extracted.jobTitle) jobTitle = extracted.jobTitle.trim();
+          if (!jobTitle && (extracted.jobTitle || extracted.inferredRoleTitle)) jobTitle = String(extracted.jobTitle || extracted.inferredRoleTitle).trim();
           if (!jobDescription && extracted.jobDescription) jobDescription = extracted.jobDescription.trim();
           else if (extracted.jobDescription && extracted.jobDescription.length > jobDescription.length) {
             jobDescription = extracted.jobDescription.trim();

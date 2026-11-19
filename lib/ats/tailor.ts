@@ -9,6 +9,17 @@ import {
   formatSkillDisplay,
 } from "./scoring";
 import { normalizeJobIdentity } from "./job-identity";
+import { applyConfirmedAiTools, AI_TOOLS_CATEGORY } from "./candidate-tools";
+import {
+  ROLE_PROFILES,
+  SUMMARY_LEAD,
+  detectRoleFamily,
+  resolvePositioningTitle,
+  prioritizeResumeForRole,
+  supportingStrengths,
+  joinNatural,
+  type RoleFamily,
+} from "./role-profile";
 import type { UnifiedATSAudit } from "./analysis";
 import { parseBalancedBraces } from "./latex-text";
 import {
@@ -42,7 +53,7 @@ export const CRITICAL_TWICE_RULE_PROMPT_BLOCK = `CRITICAL "TWICE RULE" & CONTEXT
 3. STRICT CONSTRAINTS:
    - Weave at most 1–2 target JD skills per bullet (max 3–4 across the entire resume) where they fit the project's technical domain naturally.
    - Use proper Oxford commas ("using Python, FastAPI, and ZeroMQ") — NEVER chain skills with "and ... and ...".
-   - Keep all company names (Julley Online Private Limited, Vertx), dates, subproject titles, and quantitative metrics (42%, 28%, 35%, 500K+, 99.9%, 38%) 100% intact.
+   - Keep every company name, date, subproject title, and quantitative metric exactly as written in the candidate's own resume. Never move a technology, metric, or achievement from one project to another, even within the same employer.
    - Never prepend a second action verb if the bullet already starts with a past-tense action verb.`;
 
 export function escapeLatex(str: string): string {
@@ -660,7 +671,11 @@ export function rewriteSummaryWithJDAlignment(
   summaryText: string,
   targetRole: string,
   domainKeywords: string[] = [],
-  overlappingTools: string[] = []
+  overlappingTools: string[] = [],
+  /** JD-detected role family; drives the positioning so the summary presents the candidate as that exact role. */
+  family: RoleFamily = "generic",
+  /** Final resume skills + bullets; used to name complementary strengths that are really on the resume. */
+  evidenceText = ""
 ): string {
   let role = (targetRole || "AI Engineer").replace(/^(?:for\s+|an?\s+)/i, "").trim();
   if (role.toLowerCase().endsWith("engineers")) {
@@ -693,15 +708,25 @@ export function rewriteSummaryWithJDAlignment(
         ? `${items[0]} and ${items[1]}`
         : `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 
+  // A detected role family defines the positioning; JD domain terms only steer the generic fallback.
   const domain =
-    domainKeywords.length > 0 ? oxford(uniqueFormatted(domainKeywords).slice(0, 2)) : "scalable distributed architectures";
-  const toolList = uniqueFormatted(overlappingTools).slice(0, 3);
+    family !== "generic"
+      ? ROLE_PROFILES[family].domain
+      : domainKeywords.length > 0
+        ? oxford(uniqueFormatted(domainKeywords).slice(0, 2))
+        : ROLE_PROFILES.generic.domain;
+  const toolList = uniqueFormatted(overlappingTools).slice(0, 4);
   const tools = toolList.length > 0 ? oxford(toolList) : "modern full-stack technologies";
 
   const sentence1 = `Results-driven ${role} specializing in ${domain}.`;
-  const sentence2 = `Demonstrated expertise in engineering high-reliability systems and production services utilizing ${tools}.`;
+  const sentence2 = `${SUMMARY_LEAD[family]} using ${tools}.`;
 
-  return `${sentence1} ${sentence2}`;
+  // Keep real strengths outside the target role visible as support (never invented: gated on resume evidence)
+  const support = evidenceText ? supportingStrengths(evidenceText, family).slice(0, 2) : [];
+  const sentence3 = support.length > 0 ? `Complemented by hands-on ${joinNatural(support)} experience.` : "";
+  const base = `${sentence1} ${sentence2}`;
+  // Stay within the one-page budget: only append the supporting sentence if the summary stays ~3 lines
+  return sentence3 && base.length + sentence3.length < 330 ? `${base} ${sentence3}` : base;
 }
 
 /**
@@ -820,6 +845,32 @@ export function reframeBulletsToGoogleXYZ(
 }
 
 /**
+ * Domain-specific skills may only be woven into a bullet whose own text already shows that domain, so a skill is
+ * never attributed to an unrelated project (e.g. Computer Vision into an integration-hub bullet, or React into a
+ * telemetry pipeline). Returns null for skills with no domain restriction.
+ */
+function skillHostPattern(skill: string): RegExp | null {
+  const s = skill.trim().toLowerCase();
+  if (/^(?:computer vision|vlms?|vision language models?|opencv|yolo|sahi|ocr|image processing|object detection)$/.test(s))
+    return /\b(?:yolo|sahi|ocr|opencv|visual|vision|detection|drawings?|images?)\b/i;
+  if (/^(?:rag|retrieval-augmented generation|vector databases?|embeddings?|semantic search)$/.test(s))
+    return /\b(?:rag|retriev\w*|embeddings?|vector|semantic|knowledge)\b/i;
+  if (/^(?:machine learning|deep learning|nlp|natural language processing|pytorch|tensorflow|scikit-learn|mlops|transformers|hugging ?face|generative ai|genai|ai agents?|multi-agent systems?)$/.test(s))
+    return /\b(?:ai|llms?|models?|machine learning|neural|yolo|ocr|semantic|agents?|workflows?)\b/i;
+  if (/^(?:mavlink|pymavlink|ros2?|drones?|uav|ardupilot|gstreamer|webrtc|zeromq|embedded|firmware)$/.test(s))
+    return /\b(?:drones?|ardupilot|mavlink|telemetry|vehicles?|gcs|ground control|zeromq|gstreamer|video)\b/i;
+  if (/^(?:react(?:\.js)?|next\.?js|vue(?:\.js)?|angular|redux|tailwind(?: ?css)?|html\/css|html|css|react native)$/.test(s))
+    return /\b(?:react|next\.?js|front-?end|ui|interfaces?|dashboards?|web|full-stack|client)\b/i;
+  if (/^(?:javascript|typescript|node\.?js|express(?:\.js)?)$/.test(s))
+    return /\b(?:react|node\.?js|express|javascript|typescript|front-?end|web|full-stack|apis?|rest)\b/i;
+  if (/^(?:sql|mongodb|postgres(?:ql)?|mysql|redis|databases?)$/.test(s))
+    return /\b(?:databases?|mongodb|postgres(?:ql)?|sql|queries|records|data|platform|search)\b/i;
+  if (/^(?:python|fastapi|flask|django)$/.test(s))
+    return /\b(?:fastapi|flask|django|python|ardupilot|yolo|sahi|ocr|opencv|pipeline|backend|apis?)\b/i;
+  return null;
+}
+
+/**
  * Contextually weaves target skills into experience bullets using the "Twice Rule".
  * Example: If adding "Artificial Intelligence", reframes:
  * "Developed a multi-stage AI pipeline using YOLO, SAHI, and OCR to extract tags."
@@ -843,202 +894,50 @@ export function weaveSkillIntoExperienceBullets(
   }
 
   const updatedBullets = [...bullets];
+  const hostPattern = skillHostPattern(normSkill);
 
-  // 1. Artificial Intelligence
+  // Generic, resume-agnostic anchors only. Every rewrite below keys off structure that any resume can contain
+  // (an existing "AI" noun, "containerized with X", "APIs", a named LLM vendor, ...) and never off one candidate's
+  // project wording, so a skill can only be woven into a bullet whose own text already shows that domain.
+  const rewriteFirst = (re: RegExp, to: string | ((m: string) => string)): { wovenBullets: string[]; success: boolean } | null => {
+    for (let i = 0; i < updatedBullets.length; i++) {
+      if (re.test(updatedBullets[i]) && !exactRe.test(updatedBullets[i])) {
+        updatedBullets[i] = updatedBullets[i].replace(re, to as string);
+        return { wovenBullets: updatedBullets, success: true };
+      }
+    }
+    return null;
+  };
+  const done = (r: { wovenBullets: string[]; success: boolean } | null) => r || { wovenBullets: bullets, success: false };
+
   if (/^artificial intelligence$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/yolo|sahi|ocr|drawing tag|p&id|tag extraction/i.test(b)) {
-        if (/multi-stage\s+(?:AI\s+)?pipeline/i.test(b)) {
-          updatedBullets[i] = b
-            .replace(
-              /^(?:Developed|Engineered|Spearheaded|Architected)?\s*(?:a|an)?\s*multi-stage\s+(?:AI\s+)?pipeline\s+(?:using|combining)?/i,
-              "Spearheaded an Artificial Intelligence pipeline in Python combining"
-            )
-            .replace(/extract\s+equipment\s+and\s+instrument\s+tags/i, "extract equipment tags");
-          return { wovenBullets: updatedBullets, success: true };
-        }
-        if (/yolo/i.test(b) && !exactRe.test(b)) {
-          updatedBullets[i] = b.replace(/\b(?:using|with)\s+YOLO/i, "an Artificial Intelligence pipeline in Python combining YOLO");
-          return { wovenBullets: updatedBullets, success: true };
-        }
-      }
-    }
-    return { wovenBullets: bullets, success: false };
+    return done(rewriteFirst(/(?<![A-Za-z])AI(?=\s+(?:pipelines?|workflows?|systems?|models?|agents?|platforms?|features?|assistants?|matching))/, "Artificial Intelligence"));
   }
-
-  // 2. Python
   if (/^python$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/fastapi|flask|django|ardupilot/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\b(FastAPI|Flask|Django)\b/i, "Python, $1");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/pipeline\s+combining\s+YOLO/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bpipeline\s+combining\b/i, "pipeline in Python combining");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
+    const r = rewriteFirst(/\b(FastAPI|Flask|Django)\b/, "Python, $1");
+    if (r) return r;
   }
-
-  // 3. Microservices
-  if (/^microservices?$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/adapter\s+and\s+registry\s+patterns/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(
-          /\badapter\s+and\s+registry\s+patterns\b/i,
-          "microservices and adapter patterns"
-        );
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/centralized\s+integration\s+hub/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(
-          /\bcentralized\s+integration\s+hub\b/i,
-          "microservices integration hub"
-        );
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
+  if (/^microservices?$/i.test(normSkill) || /^distributed\s+systems?$/i.test(normSkill)) {
+    // Architecture claims are never inferred from wording; they stay in the Skills section unless already in a bullet.
     return { wovenBullets: bullets, success: false };
   }
-
-  // 4. Docker
   if (/^docker$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      const existingContainer = b.match(/\bcontainerized with ([A-Za-z0-9.+#-]+)/i);
-      if (existingContainer && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(existingContainer[0], `containerized with ${existingContainer[1]} and Docker`);
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/telemetry\s+pipeline/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\btelemetry\s+pipeline\b/i, "telemetry pipeline containerized with Docker");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/integration\s+hub/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bintegration\s+hub\b/i, "integration hub containerized with Docker");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/founder-investor\s+platform/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bfounder-investor\s+platform\b/i, "founder-investor platform containerized with Docker");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
-    return { wovenBullets: bullets, success: false };
+    return done(rewriteFirst(/\bcontainerized with ([A-Za-z0-9.+#-]+)/i, (m) => `${m} and Docker`));
   }
-
-  // 5. Kubernetes
-  if (/^kubernetes|k8s$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/containerized with Docker\b/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bcontainerized with Docker\b/i, "containerized with Docker and Kubernetes");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/\bcloud\s+clusters?\b/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bcloud\s+clusters?\b/i, "Kubernetes cloud clusters");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/telemetry\s+pipeline/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\btelemetry\s+pipeline\b/i, "Kubernetes-orchestrated telemetry pipeline");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/zero-downtime\s+CI\/CD\s+deployments/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bzero-downtime\s+CI\/CD\s+deployments\b/i, "zero-downtime CI/CD deployments across Kubernetes clusters");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
-    return { wovenBullets: bullets, success: false };
+  if (/^(?:kubernetes|k8s)$/i.test(normSkill)) {
+    return done(
+      rewriteFirst(/\bcontainerized with Docker\b/i, "containerized with Docker and Kubernetes") ||
+        rewriteFirst(/\bcloud\s+clusters?\b/i, "Kubernetes cloud clusters")
+    );
   }
-
-  // 6. REST / REST APIs / RESTful
   if (/^rest(?:ful)?(?:\s*apis?)?$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/reusable\s+connector\s+workflows/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\breusable\s+connector\s+workflows\b/i, "reusable REST API connector workflows");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/centralized\s+(?:microservices\s+)?integration\s+hub/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bintegration\s+hub\b/i, "REST API integration hub");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/fundraising\s+pipelines/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bfundraising\s+pipelines\b/i, "RESTful fundraising pipelines");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/founder-investor\s+platform\s+using/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bfounder-investor\s+platform\s+using\b/i, "founder-investor platform with REST APIs using");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
-    return { wovenBullets: bullets, success: false };
+    return done(rewriteFirst(/(?<!REST |RESTful )\bAPIs?\b/, (m) => `REST ${m}`));
   }
-
-  // 7. Distributed Systems
-  if (/^distributed\s+systems?$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/distributed\s+ArduPilot/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bdistributed\s+ArduPilot\b/i, "Distributed Systems architecture for ArduPilot");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/centralized\s+integration\s+hub/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bcentralized\s+integration\s+hub\b/i, "distributed systems integration hub");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/full-stack\s+founder-investor\s+platform/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bfull-stack\s+founder-investor\s+platform\b/i, "distributed full-stack founder-investor platform");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
-    return { wovenBullets: bullets, success: false };
-  }
-
-  // 8. LLM / Large Language Models
   if (/^(?:llms?|large language models?)$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/using\s+YOLO,\s+SAHI,\s+OCR,\s+OpenCV,\s+and\s+Gemini/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\band\s+Gemini\b/i, "and Gemini LLM");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/5\+\s+distinct\s+AI\s+workflows/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\b5\+\s+distinct\s+AI\s+workflows\b/i, "5+ distinct AI and LLM workflows");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/mock\s+pitching\s+experience/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bAI-powered\s+mock\s+pitching\s+experience\b/i, "LLM-powered mock pitching experience");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/parallel\/sequential\s+AI\s+workflows/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bparallel\/sequential\s+AI\s+workflows\b/i, "parallel/sequential AI and LLM workflows");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
-    return { wovenBullets: bullets, success: false };
+    return done(rewriteFirst(/\b(Gemini|OpenAI|GPT-?[\w.]*|Claude|Llama)\b(?! LLM)/, "$1 LLM"));
   }
-
-  // 9. Git / GitHub
   if (/^(?:git|github|version control)$/i.test(normSkill)) {
-    for (let i = 0; i < updatedBullets.length; i++) {
-      const b = updatedBullets[i];
-      if (/zero-downtime\s+CI\/CD\s+deployments/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bzero-downtime\s+CI\/CD\s+deployments\b/i, "zero-downtime Git-driven CI/CD deployments");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/reusable\s+connector\s+workflows/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\breusable\s+connector\s+workflows\b/i, "Git version-controlled connector workflows");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-      if (/fundraising\s+pipelines/i.test(b) && !exactRe.test(b)) {
-        updatedBullets[i] = b.replace(/\bengagement\s+tracking\s+mechanisms\b/i, "engagement tracking mechanisms managed via Git workflows");
-        return { wovenBullets: updatedBullets, success: true };
-      }
-    }
-    return { wovenBullets: bullets, success: false };
+    return done(rewriteFirst(/\bCI\/CD\b/, "Git-driven CI/CD"));
   }
 
   // 10. Agentic AI: "Engineered 5+ distinct AI workflows" -> "Engineered 5+ distinct Agentic AI workflows"
@@ -1087,17 +986,6 @@ export function weaveSkillIntoExperienceBullets(
       }
     }
     if (primaryOnly) return { wovenBullets: bullets, success: false };
-    if (/azure/i.test(normSkill)) {
-      for (let i = 0; i < updatedBullets.length; i++) {
-        const b = updatedBullets[i];
-        if (/\bOutlook\b/i.test(b) && !exactRe.test(b)) {
-          updatedBullets[i] = /\bMicrosoft\s+Outlook\b/i.test(b)
-            ? b.replace(/\bMicrosoft\s+Outlook\b/i, "Microsoft Azure/Outlook")
-            : b.replace(/\bOutlook\b/i, "Azure/Outlook");
-          return { wovenBullets: updatedBullets, success: true };
-        }
-      }
-    }
     for (let i = 0; i < updatedBullets.length; i++) {
       const b = updatedBullets[i];
       if (/\bcloud\b/i.test(b) && !exactRe.test(b)) {
@@ -1111,7 +999,7 @@ export function weaveSkillIntoExperienceBullets(
   if (primaryOnly) return { wovenBullets: bullets, success: false };
   for (let i = 0; i < updatedBullets.length; i++) {
     const b = updatedBullets[i];
-    if (b.length > 25 && !exactRe.test(b)) {
+    if (b.length > 25 && !exactRe.test(b) && (!hostPattern || hostPattern.test(b)) && !(/^(?:javascript|typescript)$/i.test(normSkill) && /\b(?:react|node\.?js|express)/i.test(b))) {
       const usingMatch = b.match(/\b(?:using|with|leveraging)\s+([A-Za-z0-9.,\s&+#/-]+?)(?=[;!?]|\s+(?:for|to|which|that|enabling|boosting|improving|cutting|scaling)\b|[.]$)/i);
       if (usingMatch && usingMatch[1]) {
         const rawList = usingMatch[1].trim().replace(/,\s*and\s+/gi, ", ").replace(/\s+and\s+/gi, ", ");
@@ -1334,6 +1222,18 @@ export function parseResumeToCanonical(
 
       if (dateMatch && !bulletRe.test(line)) {
         const dStr = dateMatch[0];
+
+        // Date-only line (e.g. "Mar 2026 – Present"): belongs to the preceding undated entry,
+        // never to a new placeholder entry.
+        const dateOnlyRemainder = line.replace(dStr, "").replace(/[|–—\-\s,]+/g, "");
+        if (!dateOnlyRemainder) {
+          const prevExp = experience[experience.length - 1];
+          if (prevExp && !prevExp.dateRange && prevExp.bullets.length === 0 && prevExp.subheadings.length === 0) {
+            prevExp.dateRange = dStr;
+          }
+          continue;
+        }
+
         if (line.includes("|")) {
           const parts = line.split("|").map((p) => p.trim()).filter(Boolean);
           const nonDateParts = parts.filter((p) => !dateRangeRe.test(p));
@@ -1363,8 +1263,8 @@ export function parseResumeToCanonical(
             org = rem.join(", ");
           }
           experience.push({
-            role: role || org || "Role",
-            company: org || role || "Company",
+            role: role || org,
+            company: org || role,
             dateRange: dStr,
             location: loc || undefined,
             bullets: [],
@@ -1379,7 +1279,16 @@ export function parseResumeToCanonical(
         let comp = "";
         let loc = parsed.loc;
         if (nextLine && !bulletRe.test(nextLine) && !nextDateMatch && !CANONICAL_HEADINGS.some(([, r]) => r.test(nextLine))) {
-          comp = nextLine;
+          // Collapsed two-column rows from screenshots/OCR: "<Company> <Dates>" then "<Role> <Location>".
+          // Detect by which line carries the role keyword; the date line is then the company row.
+          const nextParsed = splitTrailingLocation(nextLine);
+          if (!isRoleSegment(rem) && isRoleSegment(nextParsed.main || nextLine)) {
+            comp = rem;
+            role = nextParsed.main || nextLine;
+            loc = nextParsed.loc || "";
+          } else {
+            comp = nextLine;
+          }
           i++;
         }
         experience.push({
@@ -1465,20 +1374,52 @@ export function parseResumeToCanonical(
       if (
         projects.length > 0 &&
         projects[projects.length - 1].bullets.length === 0 &&
-        !projects[projects.length - 1].techStack &&
+        (!projects[projects.length - 1].techStack ||
+          projects[projects.length - 1].techStack!.split("|").every((x) => /^(?:\[[^\]]+\]\([^)]+\)|source code|live demo|live link|code|demo|github|live|link|website)$/i.test(x.trim()))) &&
+        !/^(?:\[[^\]]+\]\([^)]+\)|source code|live demo|live link|code|demo|github|live|link|website)(?:\s*\|\s*(?:\[[^\]]+\]\([^)]+\)|source code|live demo|live link|code|demo|github|live|link|website))*$/i.test(line) &&
         nextLine &&
         bulletRe.test(nextLine)
       ) {
-        projects[projects.length - 1].techStack = line;
+        const prevTech = projects[projects.length - 1].techStack;
+        // Keep any link labels already captured on the heading row (rendered in the right cell).
+        projects[projects.length - 1].techStack = prevTech ? `${line} | ${prevTech}` : line;
         continue;
       }
 
-      let pTitle = line;
+      // Project link labels ("Code | Live Demo") belong to the right-hand cell of the heading row,
+      // never to the title or the technology-stack line.
+      const PROJECT_LINK_LABEL = "Source Code|Live Demo|Live Link|Code|Demo|GitHub|Live|Link|Website";
+      const trailingLinksRe = new RegExp(
+        `(?:^|\\s+|\\s*[|·•]\\s*)((?:${PROJECT_LINK_LABEL})(?:\\s*[|·•,]?\\s*(?:${PROJECT_LINK_LABEL}))*)\\s*$`,
+        "i"
+      );
+      let pLinks = "";
+      let pLine = line;
+      const linksMatch = line.match(trailingLinksRe);
+      if (linksMatch && linksMatch.index !== undefined) {
+        pLinks = (linksMatch[1].match(new RegExp(PROJECT_LINK_LABEL, "gi")) || [])
+          .map((l) => l.replace(/\b\w/g, (c) => c.toUpperCase()))
+          .join(" | ");
+        pLine = line.slice(0, linksMatch.index).replace(/[|·•\s]+$/, "").trim();
+        if (!pLine) {
+          const lastProj = projects[projects.length - 1];
+          if (lastProj) {
+            const have = (lastProj.dateRange || "").split("|").map((x) => x.trim()).filter(Boolean);
+            for (const l of pLinks.split("|").map((x) => x.trim()).filter(Boolean)) {
+              if (!have.some((h) => h.toLowerCase() === l.toLowerCase())) have.push(l);
+            }
+            lastProj.dateRange = have.join(" | ");
+          }
+          continue;
+        }
+      }
+
+      let pTitle = pLine;
       let pTech = "";
       let pDate = "";
-      if (line.includes("|") || line.includes(" - ") || line.includes(" — ")) {
-        const sep = line.includes("|") ? "|" : (line.includes(" — ") ? " — " : " - ");
-        const [t, ...r] = line.split(sep);
+      if (pLine.includes("|") || pLine.includes(" - ") || pLine.includes(" — ")) {
+        const sep = pLine.includes("|") ? "|" : (pLine.includes(" — ") ? " — " : " - ");
+        const [t, ...r] = pLine.split(sep);
         pTitle = t.trim();
         const nonDateSegments: string[] = [];
         for (const seg of r) {
@@ -1494,7 +1435,7 @@ export function parseResumeToCanonical(
       if (pTitle.toLowerCase().endsWith(" code")) {
         pTitle = pTitle.replace(/\s+code$/i, "").trim();
       }
-      projects.push({ title: pTitle, techStack: pTech || undefined, dateRange: pDate || undefined, bullets: [] });
+      projects.push({ title: pTitle, techStack: pTech || undefined, dateRange: pLinks || pDate || undefined, bullets: [] });
       continue;
     }
 
@@ -1600,7 +1541,7 @@ export function parseResumeToCanonical(
     }
   }
 
-  return CanonicalResumeSchema.parse({
+  return applyConfirmedAiTools(CanonicalResumeSchema.parse({
     fullName: fullName || "Applicant",
     email,
     phone,
@@ -1615,7 +1556,7 @@ export function parseResumeToCanonical(
     education,
     achievements,
     certifications,
-  });
+  }));
 }
 
 /**
@@ -1781,7 +1722,7 @@ export function cleanAiText(text: string): string {
 
   // Collapse accidental double action verbs (e.g. "Architected Orchestrated", "Spearheaded Designed", "Architected small Architected")
   const ACTION_VERBS_PATTERN =
-    "Architected|Orchestrated|Engineered|Spearheaded|Implemented|Streamlined|Optimized|Delivered|Developed|Designed|Synthesized|Devised|Built|Launched|Automated|Integrated|Formulated|Accelerated|Pioneered|Standardized|Scaled|Executed|Authored|Established|Reduced|Improved|Managed|Led|Directed|Constructed|Created|Produced|Published|Programmed|Resolved|Secured|Trained|Collaborated|Conducted|Achieved|Combined|Consolidated|Deployed|Configured|Refactored|Migrated|Centralized|Modeled|Maintained|Analyzed|Evaluated";
+    "Architected|Orchestrated|Engineered|Spearheaded|Implemented|Streamlined|Optimized|Delivered|Developed|Designed|Synthesized|Devised|Built|Launched|Automated|Integrated|Formulated|Accelerated|Pioneered|Standardized|Scaled|Executed|Authored|Established|Reduced|Improved|Managed|Led|Directed|Constructed|Created|Produced|Published|Programmed|Resolved|Secured|Trained|Collaborated|Conducted|Achieved|Combined|Consolidated|Deployed|Configured|Refactored|Migrated|Centralized|Modeled|Maintained|Analyzed|Evaluated|Contributed|Supported|Assisted|Participated|Enhanced|Leveraged|Utilized|Ensured|Facilitated|Drove|Wrote|Handled|Researched|Presented|Tested|Debugged|Documented|Mentored|Coordinated";
 
   const doubleVerbRegex = new RegExp(
     `^(${ACTION_VERBS_PATTERN})\\s+(?:small\\s+|and\\s+)?(${ACTION_VERBS_PATTERN})\\b`,
@@ -1789,7 +1730,7 @@ export function cleanAiText(text: string): string {
   );
   let collapsePasses = 0;
   while (doubleVerbRegex.test(cleaned) && collapsePasses < 5) {
-    cleaned = cleaned.replace(doubleVerbRegex, "$1");
+    cleaned = cleaned.replace(doubleVerbRegex, "$2");
     collapsePasses++;
   }
 
@@ -1830,8 +1771,56 @@ export function formatDateRangeForLatex(raw?: string | null): string {
  * 3. Surgical spacing: \vspace{6pt} before sections, \vspace{4pt} before companies
  * 4. All bullets and subproject titles are run through cleanAiText() to strip raw markdown markers
  */
+const ROW_DATE_UNIT = "(?:(?:Jan(?:uary|\\.)?|Feb(?:ruary|\\.)?|Mar(?:ch|\\.)?|Apr(?:il|\\.)?|May|Jun(?:e|\\.)?|Jul(?:y|\\.)?|Aug(?:ust|\\.)?|Sep(?:tember|t\\.)?|Oct(?:ober|\\.)?|Nov(?:ember|\\.)?|Dec(?:ember|\\.)?)\\s+\\d{4}|\\d{1,2}\\/\\d{4}|\\d{4})";
+const ROW_DATE_RE = new RegExp(`\\b(${ROW_DATE_UNIT}\\s*(?:[-–—]|\\bto\\b)\\s*(?:${ROW_DATE_UNIT}|Present|Current|Now))\\b`, "i");
+
 /**
- * INVARIANT — \resumeSubheading argument order (enforced everywhere, never change):
+ * Shared two-column row normalizer for \resumeSubheading. OCR/screenshot text often collapses a
+ * two-column row into one string ("Julley Online Pvt Ltd Mar 2026 - Present", "AI Engineer Hyderabad"),
+ * which would otherwise render entirely inside the LEFT cell with an empty right cell.
+ * The trailing date range moves to the right cell of the company row and the trailing location to
+ * the right cell of the title row. Already-structured entries pass through unchanged.
+ */
+export function normalizeExperienceRow(
+  roleIn: string,
+  companyIn: string,
+  locIn: string,
+  dateIn: string
+): { role: string; company: string; loc: string; date: string } {
+  let role = (roleIn || "").trim();
+  let company = (companyIn || "").trim();
+  let loc = (locIn || "").trim();
+  let date = (dateIn || "").trim();
+
+  const roleDate = role.match(ROW_DATE_RE);
+  const compDate = company.match(ROW_DATE_RE);
+  if (!date) {
+    if (compDate) date = compDate[1];
+    else if (roleDate) date = roleDate[1];
+  }
+  const stripDate = (v: string) =>
+    v.replace(ROW_DATE_RE, "").replace(/\s{2,}/g, " ").replace(/^[\s|,·–—-]+|[\s|,·–—-]+$/g, "").trim();
+  if (roleDate) role = stripDate(role);
+  if (compDate) company = stripDate(company);
+  // The date row is the company row: if the date was glued to the "role" field only, swap them.
+  if (roleDate && !compDate) {
+    if (company && !isRoleSegment(role) && isRoleSegment(company)) {
+      [role, company] = [company, role];
+    } else if (!company) {
+      company = role;
+      role = "";
+    }
+  }
+
+  if (!loc && role) {
+    const sp = splitTrailingLocation(role);
+    if (sp.loc && sp.main) { role = sp.main; loc = sp.loc; }
+  }
+  return { role, company, loc, date };
+}
+
+/**
+ * INVARIANT— \resumeSubheading argument order (enforced everywhere, never change):
  *   #1 = Job Title  (bold, left,  Row 1)   — e.g. "Platform Engineer"
  *   #2 = Location   (italic small, right, Row 1) — e.g. "India" or ""
  *   #3 = Company    (small, left,  Row 2)   — e.g. "JulleyOnline Private Limited"
@@ -1881,10 +1870,11 @@ export function generateLatexFromCanonical(
   }
 
   const estimatedLines = estimateRenderedLines(resume);
+  // Single shared layout profile. Content that cannot fit even the densest readable tier
+  // (> SINGLE_PAGE_LINE_BUDGET) gets the standard readable tier and flows to a clean second page.
   const isUltraDenseOnePage = estimatedLines > 74 && estimatedLines <= 88;
   const isDenseOnePage = estimatedLines > 62 && estimatedLines <= 74;
-  const isStandardOnePage = estimatedLines > 50 && estimatedLines <= 62;
-  const isSparseOnePage = estimatedLines <= 50;
+  const isStandardOnePage = (estimatedLines > 50 && estimatedLines <= 62) || estimatedLines > 88;
 
   const listKeyVals = isUltraDenseOnePage
     ? "leftmargin=1.2em, itemsep=0pt, parsep=0pt, topsep=0.5pt, partopsep=0pt, label=\\textbullet"
@@ -1943,14 +1933,22 @@ export function generateLatexFromCanonical(
     bodyLatex += `\\section{WORK EXPERIENCE}\n`;
     for (let eIdx = 0; eIdx < resume.experience.length; eIdx++) {
       const exp = resume.experience[eIdx];
-      const company = cleanAiText(exp.company || "Company");
-      const role = cleanAiText(exp.role || "Role");
-      const loc = cleanAiText(exp.location || "");
-      const dateRange = formatDateRangeForLatex(exp.dateRange);
+      const normRow = normalizeExperienceRow(
+        cleanAiText(exp.role || ""),
+        cleanAiText(exp.company || ""),
+        cleanAiText(exp.location || ""),
+        exp.dateRange || ""
+      );
+      let role = normRow.role;
+      let company = normRow.company;
+      if (!role) { role = company; company = ""; }
+      if (company && company.toLowerCase() === role.toLowerCase()) company = "";
+      const loc = normRow.loc;
+      const dateRange = formatDateRangeForLatex(normRow.date);
 
-      // Row 1: Company Name (bold, left) | Location (italic small, right)
-      // Row 2: Job Title (small, left) | Date Range (italic small, right)
-      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
+      // Row 1: Job Title (bold, left) | Location (italic small, right)
+      // Row 2: Company Name (small, left) | Date Range (italic small, right)
+      bodyLatex += `\\resumeSubheading\n  {${formatLatexLine(role, allKnownLinks)}}{${formatLatexLine(loc, allKnownLinks)}}\n  {${formatLatexLine(company, allKnownLinks)}}{${formatLatexLine(dateRange, allKnownLinks)}}\n`;
 
       // Top-level bullets under company
       if (Array.isArray(exp.bullets) && exp.bullets.length > 0) {
@@ -2007,9 +2005,42 @@ export function generateLatexFromCanonical(
   if (resume.projects && resume.projects.length > 0) {
     bodyLatex += `\\section{PROJECTS}\n`;
     for (const proj of resume.projects) {
-      const pTitle = formatLatexLine(cleanAiText(proj.title || ""), allKnownLinks);
-      const pDate = formatDateRangeForLatex(proj.dateRange);
-      const pTech = proj.techStack ? formatLatexLine(cleanAiText(proj.techStack), allKnownLinks) : "";
+      // Project link labels ("Code", "Live Demo", "[Code](url)") are never title or tech-stack content:
+      // pull them out of every field into one grouped right-hand cell of the heading row.
+      const LINK_SEG_RE = /^(?:\[[^\]]+\]\([^)]+\)|(?:source code|live demo|live link|code|demo|github|live|link|website))$/i;
+      const projLinks: string[] = [];
+      const takeLinks = (raw: string): string => {
+        const kept: string[] = [];
+        const addLink = (l: string) => {
+          if (!projLinks.some((x) => x.toLowerCase() === l.toLowerCase())) projLinks.push(l);
+        };
+        const LABELS = "source code|live demo|live link|code|demo|github|live|link|website";
+        for (let seg of (raw || "").split("|").map((x) => x.trim()).filter(Boolean)) {
+          if (LINK_SEG_RE.test(seg)) { addLink(seg); continue; }
+          // A link glued onto the end of a title/tech segment ("Resume Analyzer [Code](url)" or
+          // "Resume Analyzer Code"): split it off so it joins the right-hand link group.
+          const glued: string[] = [];
+          const inlineMd = new RegExp(`\\s*\\[(?:${LABELS})\\]\\([^)]+\\)`, "gi");
+          seg = seg.replace(inlineMd, (m) => { glued.push(m.trim()); return ""; }).trim();
+          const trailingPlain = seg.match(new RegExp(`^(.*\\S)\\s+(${LABELS})$`, "i"));
+          if (trailingPlain) { seg = trailingPlain[1].trim(); glued.push(trailingPlain[2]); }
+          glued.forEach(addLink);
+          if (seg) kept.push(seg);
+        }
+        return kept.join(" | ");
+      };
+      const rawDate = (proj.dateRange || "").trim();
+      const dateIsLinksOnly = !!rawDate && rawDate.split("|").every((x: string) => LINK_SEG_RE.test(x.trim()));
+      const titleKept = takeLinks(proj.title || "");
+      const techKept = takeLinks(proj.techStack || "");
+      if (dateIsLinksOnly) takeLinks(rawDate);
+      const pTitle = formatLatexLine(cleanAiText(titleKept || proj.title || ""), allKnownLinks);
+      // Right cell: the project's date range (never dropped) followed by the grouped links (kept atomic in one \mbox).
+      const projDate = formatDateRangeForLatex(dateIsLinksOnly ? "" : proj.dateRange);
+      const pDate = projLinks.length > 0
+        ? (projDate ? projDate + " \\enspace\\textbar\\enspace " : "") + "\\mbox{\\textup{" + projLinks.map((l) => formatLatexLine(l, allKnownLinks)).filter(Boolean).join(" \\enspace\\textbar\\enspace ") + "}}"
+        : projDate;
+      const pTech = techKept ? formatLatexLine(cleanAiText(techKept), allKnownLinks) : "";
 
       bodyLatex += `\\resumeProjectHeading\n  {\\textbf{${pTitle}}}{${pDate}}\n`;
       if (pTech) {
@@ -2147,6 +2178,7 @@ export function generateLatexFromCanonical(
         : "1.04";
 
   const preamble = `%-------------------------
+% ATS-SHARED-LAYOUT-ENGINE
 % Adaptive ATS LaTeX Resume
 % Clean Typography, Zero Page Numbers, 100% ATS Compliant
 %------------------------
@@ -2193,9 +2225,9 @@ ${targetSectionSpacing}
 
 \\newcommand{\\resumeProjectHeading}[2]{
   \\vspace{${subHeadingVspace}}\\nopagebreak[3]
-  \\begin{tabular*}{1.0\\textwidth}[t]{l@{\\extracolsep{\\fill}}r}
+  \\noindent\\begin{tabularx}{\\textwidth}[t]{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{1em}}r@{}}
     #1 & \\textit{\\small #2}
-  \\end{tabular*}\\nopagebreak[4]
+  \\end{tabularx}\\nopagebreak[4]
 }
 
 \\newcommand{\\resumeDivider}{\\enspace\\textbar\\enspace}
@@ -2443,6 +2475,8 @@ export function classifySkillBucket(skill: string): SkillBucket {
 /** Finds (or names) the Technical Skills row that a skill belongs to, never routing non-languages to Languages. */
 function resolveSkillCategoryKey(existingKeys: string[], skill: string): string {
   const bucket = classifySkillBucket(skill);
+  // The AI Development Tools category is reserved for the candidate's own tools; never route JD skills into it
+  existingKeys = existingKeys.filter((k) => k.trim().toLowerCase() !== AI_TOOLS_CATEGORY.toLowerCase());
   const find = (re: RegExp, exclude?: RegExp) => existingKeys.find((k) => re.test(k) && !(exclude && exclude.test(k)));
   switch (bucket) {
     case "Languages":
@@ -2569,6 +2603,67 @@ function removeSkillFromTechnicalSkills(canonical: CanonicalResume, skill: strin
   }
 }
 
+/** Text that DEMONSTRATES skills: work-experience and project content (not the skills list itself). */
+function demonstrationLines(canonical: CanonicalResume): string[] {
+  const lines: string[] = [...getAllExperienceBullets(canonical)];
+  for (const exp of canonical.experience || []) {
+    for (const sub of exp.subheadings || []) {
+      if (sub.title) lines.push(sub.title);
+      if (sub.techStack) lines.push(sub.techStack);
+    }
+  }
+  for (const proj of canonical.projects || []) {
+    if (proj.title) lines.push(proj.title);
+    if (proj.techStack) lines.push(proj.techStack);
+    lines.push(...(proj.bullets || []));
+  }
+  return lines;
+}
+
+export type JDSkillState =
+  | "presentAndDemonstrated"
+  | "listedNotDemonstrated"
+  | "verifiedMissing"
+  | "notPossessed";
+
+export interface JDSkillReport {
+  presentAndDemonstrated: string[];
+  listedNotDemonstrated: string[];
+  /** In the resume (experience/projects/summary/certifications) but absent from Technical Skills: safe to add. */
+  verifiedMissing: string[];
+  /** No evidence anywhere in the resume: never added automatically; needs the candidate's confirmation. */
+  notPossessed: string[];
+  /** JD skills that were tentatively added but removed because no real experience bullet could carry them. */
+  unsupported: string[];
+}
+
+/**
+ * Compares the JD's skills against the ORIGINAL resume, which is the source of truth for qualifications.
+ * A skill counts as verified only when the resume itself evidences it.
+ */
+export function classifyJDSkills(canonical: CanonicalResume, requirements: { keyword: string }[]): JDSkillReport {
+  const report: JDSkillReport = { presentAndDemonstrated: [], listedNotDemonstrated: [], verifiedMissing: [], notPossessed: [], unsupported: [] };
+  const skillsText = technicalSkillsFlat(canonical).join("\n");
+  const demoText = demonstrationLines(canonical).join("\n");
+  const otherProse = [
+    canonical.summary || "",
+    ...(canonical.certifications || []),
+    ...(canonical.achievements || []),
+    ...(canonical.education || []).flatMap((e) => [e.degree || "", ...(e.bullets || [])]),
+  ].join("\n");
+  for (const { keyword } of requirements) {
+    const kw = keyword.trim();
+    if (kw.length < 3 || /^(engineer|software|developer|team|experience|years|work|strong|ability)$/i.test(kw)) continue;
+    const listed = containsSkill(skillsText, kw);
+    const demonstrated = containsSkill(demoText, kw);
+    if (listed && demonstrated) report.presentAndDemonstrated.push(kw);
+    else if (listed) report.listedNotDemonstrated.push(kw);
+    else if (demonstrated || containsSkill(otherProse, kw)) report.verifiedMissing.push(kw);
+    else report.notPossessed.push(kw);
+  }
+  return report;
+}
+
 /**
  * STRICT 100% "Twice Rule": every target-JD skill that is present in Technical Skills (whether newly
  * added from the JD or already on the resume) must also appear verbatim in Work Experience bullets.
@@ -2593,7 +2688,8 @@ export function enforceStrictTwiceRule(
     const re = literalSkillRegex(skill);
     const listed = technicalSkillsFlat(canonical).some((s) => s.toLowerCase() === key || re.test(s));
     if (!listed) continue;
-    if (getAllExperienceBullets(canonical).some((b) => re.test(b))) continue;
+    // Demonstrated anywhere in work experience OR projects counts: never force it into unrelated bullets.
+    if (demonstrationLines(canonical).some((b) => re.test(b))) continue;
 
     const ok = weaveSkillIntoCanonical(canonical, skill);
 
@@ -2692,10 +2788,13 @@ export function runAllRemediationPasses(params: {
   customMetrics?: Record<number, string>;
   /** Clean role title from the JD (e.g. "AI Engineer"); used for the summary instead of a generic default. */
   targetRoleTitle?: string;
+  /** Optional: JD skills the candidate explicitly confirmed. Automatic tailoring does not depend on it. */
+  confirmedSkills?: string[];
 }): {
   optimizedText: string;
   optimizedLatex: string;
   canonical: CanonicalResume;
+  skillReport: JDSkillReport;
   passesSummary: {
     rewrites: number;
     passiveUpgrades: number;
@@ -2715,6 +2814,7 @@ export function runAllRemediationPasses(params: {
   let metricsAdded = 0;
   let grammarFixes = 0;
   const strictAddedFromJD = new Set<string>();
+  let skillReport: JDSkillReport = { presentAndDemonstrated: [], listedNotDemonstrated: [], verifiedMissing: [], notPossessed: [], unsupported: [] };
 
   // PASS 1: AI PAR Rewrites
   if (params.audit?.action_verb_and_par_rewrites) {
@@ -2822,6 +2922,9 @@ export function runAllRemediationPasses(params: {
     const jdReqs = extractRequirementsFromJobText(params.jobText);
     const targetKeywords = jdReqs.map((r) => r.keyword);
 
+    // Compare the JD against the ORIGINAL resume (source of truth) before anything is reworded.
+    skillReport = classifyJDSkills(canonical, jdReqs);
+
     // Bullet Reframing (Google XYZ format)
     const expBullets = getAllExperienceBullets(canonical);
     if (expBullets.length > 0) {
@@ -2848,7 +2951,10 @@ export function runAllRemediationPasses(params: {
       return true;
     });
 
-    // 1. Add all relevant target JD skills to Technical Skills first
+    // 1. Automatically add every relevant JD skill to Technical Skills (no manual confirmation needed).
+    //    Skills the resume does not already list are tracked in strictAddedFromJD so the strict Twice Rule
+    //    pass below can weave them into existing, context-matching bullets, and drop (and flag as
+    //    unsupported) any that cannot be grounded in the candidate's real experience.
     for (const skill of jdSkillsToWeave) {
       if (addSkillToTechnicalSkills(canonical, skill)) strictAddedFromJD.add(skill.trim().toLowerCase());
     }
@@ -2862,12 +2968,21 @@ export function runAllRemediationPasses(params: {
     const strictTargets = jdReqsFinal
       .map((r) => r.keyword)
       .filter((kw) => kw.trim().length >= 3 && !/^(engineer|software|developer|team|experience|years|work|strong|ability)$/i.test(kw.trim()));
+    // JD-added skills that cannot be woven into a real bullet are removed (never left as unproven claims)
+    // and surfaced in skillReport.unsupported; skills that were already on the resume are never removed.
     const strict = enforceStrictTwiceRule(canonical, strictTargets, { addedFromJD: strictAddedFromJD });
     twicePromotions += strict.woven.length;
+    skillReport = classifyJDSkills(canonical, jdReqsFinal);
+    skillReport.unsupported = strict.removed;
     protectedSkills = strictTargets;
 
+    // JD-driven positioning: detect the role the JD hires for, then lead with the most relevant verified content
+    const resolvedTitle = resolveTargetRoleTitle(params.jobText, params.targetRoleTitle);
+    const roleFamily = detectRoleFamily(resolvedTitle, params.jobText);
+    prioritizeResumeForRole(canonical, roleFamily, strictTargets);
+
     if (canonical.summary) {
-      const targetRole = resolveTargetRoleTitle(params.jobText, params.targetRoleTitle);
+      const targetRole = resolvePositioningTitle(resolvedTitle, roleFamily);
       const domainTerms = jdReqsFinal
         .map((r) => r.keyword)
         .filter((k) => /microservice|distributed|architecture|cloud|real-time|system design|data/i.test(k));
@@ -2878,7 +2993,7 @@ export function runAllRemediationPasses(params: {
         .filter((r) => literalSkillRegex(r.keyword).test(finalEvidence) && !domainTerms.includes(r.keyword))
         .sort((x, y) => mentions(y.keyword) - mentions(x.keyword) || (y.weightMultiplier ?? 0) - (x.weightMultiplier ?? 0))
         .map((r) => r.keyword);
-      canonical.summary = rewriteSummaryWithJDAlignment(canonical.summary, targetRole, domainTerms, candidateSkills);
+      canonical.summary = rewriteSummaryWithJDAlignment(canonical.summary, targetRole, domainTerms, candidateSkills, roleFamily, finalEvidence);
     }
   }
 
@@ -2935,6 +3050,7 @@ export function runAllRemediationPasses(params: {
     optimizedText: updatedText,
     optimizedLatex: updatedLatex,
     canonical,
+    skillReport,
     passesSummary: {
       rewrites,
       passiveUpgrades,
@@ -2957,6 +3073,7 @@ export async function autoTailorResumeToJD(params: {
   jobText: string;
   companyName?: string;
   targetRoleTitle?: string;
+  confirmedSkills?: string[];
 }): Promise<{
   optimizedText: string;
   optimizedLatex: string;
@@ -2964,6 +3081,7 @@ export async function autoTailorResumeToJD(params: {
   finalScore: number;
   attachmentFilename: string;
   canonical: CanonicalResume;
+  skillReport: JDSkillReport;
 }> {
   const reqs = extractRequirementsFromJobText(params.jobText);
   const baselineScoring = scoreResume(params.resumeText, reqs, params.jobText);
@@ -2987,6 +3105,7 @@ export async function autoTailorResumeToJD(params: {
     audit,
     jobText: params.jobText,
     targetRoleTitle: params.targetRoleTitle,
+    confirmedSkills: params.confirmedSkills,
   });
 
   let tailoredLatex = passes.optimizedLatex;
@@ -3016,6 +3135,7 @@ export async function autoTailorResumeToJD(params: {
     finalScore: finalScoring.score,
     attachmentFilename,
     canonical: passes.canonical,
+    skillReport: passes.skillReport,
   };
 }
 

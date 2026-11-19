@@ -292,7 +292,7 @@ Jan. 2020 to Present
 
   const latex3LineExp = generateATSLatex(markdown3LineExp);
   assert(
-    latex3LineExp.includes("\\resumeSubheading\n  {Cyberdyne Technologies}{Los Angeles, CA}\n  {Principal Infrastructure Engineer}{Jan. 2020 -- Present}"),
+    latex3LineExp.includes("\\resumeSubheading\n  {Principal Infrastructure Engineer}{Los Angeles, CA}\n  {Cyberdyne Technologies}{Jan. 2020 -- Present}"),
     "Must assemble 3-line experience entry into single cohesive \\resumeSubheading"
   );
   console.log("✅ [PASS] 3-line experience entry successfully structured into \\resumeSubheading!\n");
