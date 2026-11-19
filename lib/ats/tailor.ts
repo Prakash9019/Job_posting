@@ -2516,6 +2516,22 @@ export function addSkillToTechnicalSkills(canonical: CanonicalResume, skill: str
     const record = canonical.technicalSkills as Record<string, string[] | string>;
     const lowerSkill = cleanSkill.toLowerCase();
 
+    // "Tailwind" / "Tailwind CSS" / "TailwindCSS" are one skill: never list it twice
+    if (/^tailwind(?: ?css)?$/.test(lowerSkill)) {
+      const hasTw = Object.values(record).some((v) =>
+        (Array.isArray(v) ? v.map(String) : String(v).split(/,\s*/)).some((x) => /^tailwind(?: ?css)?$/i.test(x.trim()))
+      );
+      if (hasTw) return false;
+    }
+
+    // "REST" / "RESTful" is the same claim as an existing "REST APIs" entry: never list it twice
+    if (/^rest(?:ful)?$/.test(lowerSkill)) {
+      const hasRest = Object.values(record).some((v) =>
+        (Array.isArray(v) ? v.map(String) : String(v).split(/,\s*/)).some((x) => /^rest(?:ful)?(?:\s+apis?)?$/i.test(x.trim()))
+      );
+      if (hasRest) return false;
+    }
+
     // Check if already present anywhere in technicalSkills
     for (const [_, skills] of Object.entries(record)) {
       if (Array.isArray(skills)) {
@@ -2546,9 +2562,240 @@ export function addSkillToTechnicalSkills(canonical: CanonicalResume, skill: str
 }
 
 /** Weaves a skill into the best-fitting bullet group: primary (specific) anchors across ALL groups first, then fallbacks. */
-function weaveSkillIntoCanonical(canonical: CanonicalResume, skill: string): boolean {
+/**
+ * Skills that a bullet can only genuinely demonstrate when it already names a technology that implies them
+ * (React/Node run on JavaScript, a UI framework is styled with CSS, "containerized" work runs on Docker).
+ * Used for skills newly added from the JD, so we never attribute a skill the bullet gives no evidence for.
+ */
+const SKILL_IMPLIED_BY: Array<[RegExp, RegExp]> = [
+  [/^(?:javascript|js)$/i, /\b(?:react(?:\.js)?|react native|node\.?js|express(?:\.js)?|next\.?js|vue(?:\.js)?|angular|jquery)\b/i],
+  [/^typescript$/i, /\b(?:angular|nest\.?js|deno)\b/i],
+  [/^(?:css3?|html\/css)$/i, /\b(?:react(?:\.js)?|next\.?js|vue(?:\.js)?|angular|tailwind\w*|bootstrap|front-?end|user interfaces?|dashboards?|web (?:app|ui)\w*)\b/i],
+  [/^docker$/i, /\bcontainer\w*|\bdockerfiles?\b/i],
+];
+
+const TECH_ITEM_RE = /^[A-Za-z0-9][\w.+#/-]*(?:\s[A-Z0-9][\w.+#/-]*){0,2}$/;
+const MAX_LIST_ITEMS = 8;
+const MAX_SKILLS_PER_BULLET = 2;
+
+/**
+ * Broad "does this bullet describe the kind of work this skill belongs to" check. Deliberately wider than
+ * skillHostPattern (which is only for narrow domains such as computer vision or drones): a web skill fits any
+ * bullet about web/UI/API/full-stack work, a data store fits any bullet about data/backend work, and a
+ * delivery skill fits any bullet about services, deployment or platforms.
+ */
+function skillAffinity(skill: string): RegExp | null {
+  const s = skill.trim().toLowerCase();
+  if (/^(?:javascript|typescript|next\.?js|react(?:\.js)?|vue(?:\.js)?|angular|tailwind(?: ?css)?|html5?|css3?|html\/css|sass|bootstrap|redux)$/.test(s))
+    return /\b(?:react(?:\.js)?|next\.?js|vue|angular|node\.?js|express(?:\.js)?|front-?end|web|ui|full-stack|dashboards?|interfaces?|client|browser|javascript|typescript|html|css|tailwind\w*|apps?|platform)\b/i;
+  if (/^(?:postgres(?:ql)?|mysql|sql|mongodb|redis|sqlite|databases?|nosql|dynamodb)$/.test(s))
+    return /\b(?:databases?|mongodb|postgres\w*|sql|redis|data|records|queries|backend|apis?|node\.?js|express(?:\.js)?|fastapi|flask|django|full-stack|stores?|search|platform|services?)\b/i;
+  if (/^(?:docker|kubernetes|k8s|ci\/cd|terraform|aws|azure|gcp|linux|nginx|jenkins|github actions)$/.test(s))
+    return /\b(?:deploy\w*|container\w*|clusters?|cloud|aws|azure|gcp|services?|backend|apis?|platform|pipelines?|production|infrastructure|fastapi|node\.?js|express(?:\.js)?|flask|django|full-stack|stack)\b/i;
+  if (/^rest(?:ful)?(?:\s*apis?)?$/.test(s))
+    return /\b(?:apis?|endpoints?|backend|services?|express(?:\.js)?|fastapi|flask|django|node\.?js|full-stack|integrations?)\b/i;
+  return skillHostPattern(skill);
+}
+
+/**
+ * Rewrites ONE bullet so it naturally names `skill`, in the context of what the bullet already says.
+ * Returns the new text plus a fit score, or null when the bullet gives no anchor. Never appends a generic phrase.
+ */
+function rewriteBulletForSkill(
+  bullet: string,
+  skill: string,
+  siblingRes: RegExp[],
+  implied: RegExp | null
+): { text: string; score: number; listExt?: boolean } | null {
+  const s = skill.trim();
+  const affinity = skillAffinity(s);
+  if (affinity && !affinity.test(bullet)) return null;
+  const boost = implied && implied.test(bullet) ? 2 : 0;
+
+  // 1. Skill-specific in-place rewrites anchored to words the bullet already contains.
+  if (/^docker$/i.test(s)) {
+    const w = bullet.replace(/\b(containeri[sz](?:ed|ing|ation))\b(?!\s+(?:with|using|via|on)\b)/i, (m) => `Docker-${m.toLowerCase()}`);
+    if (w !== bullet) return { text: w, score: 10 };
+    // Deployed to a named cloud: say what it ran in ("in Docker containers on AWS")
+    const c = bullet.replace(/\b(on|across) (AWS|Azure|GCP)\b/, (_m, p1, cloud) => `in Docker containers ${p1} ${cloud}`);
+    if (c !== bullet) return { text: c, score: 6 };
+  }
+  if (/^rest(?:ful)?(?:\s*apis?)?$/i.test(s)) {
+    const w = bullet.replace(/(?<!REST |RESTful )\b(APIs?|endpoints?)\b/, (m) => `REST ${m}`);
+    if (w !== bullet) return { text: w, score: 10 };
+  }
+  if (/^(?:css3?|html5?|html\/css)$/i.test(s)) {
+    const w = bullet.replace(
+      /\b((?:responsive |interactive |real-time )?(?:[A-Za-z.]+ )?(?:dashboards?|user interfaces?|UIs?|front-?end))\b(?!\s+(?:styled|with|using))/i,
+      (m) => `${m} styled with ${s}`
+    );
+    if (w !== bullet && !/styled with [^,]*styled with/i.test(w)) return { text: w, score: 8 };
+  }
+
+  // 2. Extend a technology list the bullet already enumerates ("using React, Node.js and MongoDB").
+  const list = bullet.match(
+    /\b(using|with|leveraging|built on|built with|powered by)\s+([A-Za-z0-9.+#/\- ,&]+?)(?=[;!?:]|\s+(?:for|to|which|that|enabling|boosting|improving|cutting|scaling|across|in|on)\b|\.?$)/
+  );
+  if (!list) return null;
+  const items = list[2].trim().replace(/,?\s+(?:and|&)\s+/g, ", ").split(/,\s*/).map((x) => x.trim()).filter(Boolean);
+  if (items.length === 0 || items.length > MAX_LIST_ITEMS || !items.every((it) => TECH_ITEM_RE.test(it))) return null;
+  if (items.some((it) => it.toLowerCase() === s.toLowerCase())) return null;
+  const sibHits = items.filter((it) => siblingRes.some((r) => r.test(it))).length;
+  const all = [...items, s];
+  const joined = all.length === 2 ? `${all[0]} and ${all[1]}` : `${all.slice(0, -1).join(", ")}, and ${all[all.length - 1]}`;
+  return { listExt: true, text: bullet.replace(list[0], `${list[1]} ${joined}`), score: 3 + sibHits * 3 + boost - Math.max(0, items.length - 5) };
+}
+
+/**
+ * Integrates a JD skill into the best-fitting existing Experience/Projects bullet. Every bullet is scored
+ * (kind of work it describes, technologies it already lists, skills already woven into it) and the best
+ * one is rewritten in place. Up to two skills may share a bullet, but empty bullets are preferred. It never
+ * creates bullets, metrics, projects or employers and contains no candidate-specific wording; when no bullet
+ * fits, the skill stays in Technical Skills and the caller reports it as unresolved.
+ */
+function weaveSkillByBestFit(canonical: CanonicalResume, skill: string, used: Map<string, number>, ownedByCandidate: boolean): boolean {
+  void ownedByCandidate;
   const re = literalSkillRegex(skill);
-  for (const primaryOnly of [true, false]) {
+  const impliedEntry = SKILL_IMPLIED_BY.find(([k]) => k.test(skill.trim()));
+  const implied = impliedEntry ? impliedEntry[1] : null;
+
+  const siblings: string[] = [];
+  const ts = canonical.technicalSkills as unknown;
+  if (ts && typeof ts === "object" && !Array.isArray(ts)) {
+    for (const v of Object.values(ts as Record<string, string[] | string>)) {
+      const arr = Array.isArray(v) ? v.map(String) : String(v).split(/,\s*/);
+      if (arr.some((x) => x.trim().toLowerCase() === skill.trim().toLowerCase())) {
+        siblings.push(...arr.filter((x) => x.trim().toLowerCase() !== skill.trim().toLowerCase()));
+      }
+    }
+  }
+  const siblingRes = siblings.filter((x) => x.trim().length >= 2).map(literalSkillRegex);
+
+  const lists: string[][] = [];
+  for (const exp of canonical.experience) {
+    for (const sub of exp.subheadings || []) if (Array.isArray(sub.bullets)) lists.push(sub.bullets);
+    if (Array.isArray(exp.bullets)) lists.push(exp.bullets);
+  }
+  for (const proj of canonical.projects || []) if (Array.isArray(proj.bullets)) lists.push(proj.bullets);
+
+  let best: { list: string[]; idx: number; text: string; score: number; listExt: boolean } | null = null;
+  for (const list of lists) {
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (!b || b.length < 25 || re.test(b)) continue;
+      const count = used.get(b) ?? 0;
+      const r = rewriteBulletForSkill(b, skill, siblingRes, implied);
+      if (!r || r.text === b || !re.test(r.text)) continue;
+      // In-place rewrites do not lengthen a list; only list extensions are capped per bullet
+      if (r.listExt && count >= MAX_SKILLS_PER_BULLET) continue;
+      const score = r.score - (r.listExt ? count * 4 : 0);
+      if (!best || score > best.score) best = { list, idx: i, text: r.text, score, listExt: !!r.listExt };
+    }
+  }
+  if (!best) return false;
+  const prior = used.get(best.list[best.idx]) ?? 0;
+  best.list[best.idx] = best.text;
+  used.set(best.text, prior + (best.listExt ? 1 : 0));
+  return true;
+}
+
+/** Kind of work a skill belongs to; drives which existing bullet hosts it and how the sentence is worded. */
+type SkillKind = "frontend" | "data" | "api" | "delivery" | "general";
+function classifySkillKind(skill: string): SkillKind {
+  const s = skill.trim().toLowerCase();
+  if (/^(?:javascript|typescript|next\.?js|react(?:\.js)?|react native|vue(?:\.js)?|angular|tailwind(?: ?css)?|html5?|css3?|html\/css|sass|bootstrap|redux|expo)$/.test(s)) return "frontend";
+  if (/^(?:postgres(?:ql)?|mysql|sql|mongodb|redis|sqlite|nosql|dynamodb|databases?|elasticsearch|prisma|orm)$/.test(s)) return "data";
+  if (/^(?:rest(?:ful)?(?:\s*apis?)?|graphql|grpc|websockets?|apis?|node\.?js|express(?:\.js)?|fastapi|flask|django|spring(?: boot)?)$/.test(s)) return "api";
+  if (/^(?:docker|kubernetes|k8s|ci\/cd|terraform|aws|azure|gcp|linux|nginx|jenkins|github actions|git)$/.test(s)) return "delivery";
+  return "general";
+}
+
+const KIND_CUES: Record<SkillKind, RegExp> = {
+  frontend: /\b(?:react(?:\.js)?|next\.?js|vue|angular|front-?end|web|ui|ux|full-stack|dashboards?|interfaces?|client|browser|apps?|portal|pages?|views?)\b/i,
+  data: /\b(?:databases?|mongodb|postgres\w*|sql|redis|data|records|queries|storage|persist\w*|search|analytics|reports?|synchroni[sz]ation|ingest\w*|metrics)\b/i,
+  api: /\b(?:apis?|endpoints?|backend|services?|integrations?|connectors?|servers?|express(?:\.js)?|fastapi|flask|django|node\.?js|authentication|workflows?)\b/i,
+  delivery: /\b(?:deploy\w*|container\w*|clusters?|cloud|aws|azure|gcp|services?|platforms?|pipelines?|production|infrastructure|releases?|uptime|automat\w*|systems?)\b/i,
+  general: /\b(?:built|developed|engineered|designed|implemented|architected|platform|system|service|pipeline)\b/i,
+};
+
+/**
+ * Guaranteed integration (mirrors the ATS Review "+ Exp" promotion, but reworded): picks the existing
+ * Experience/Projects bullet that best fits the skill's kind of work and rewrites its tail with a clause worded
+ * for that kind ("with the interface built in Tailwind", "with data persisted in PostgreSQL"...). Existing text,
+ * metrics and attribution are untouched; no bullet, project or number is created. Bullets that already carry a
+ * woven skill are avoided so skills spread across the resume instead of piling into one sentence.
+ */
+function weaveSkillGuaranteed(canonical: CanonicalResume, skill: string, used: Map<string, number>): boolean {
+  const re = literalSkillRegex(skill);
+  const kind = classifySkillKind(skill);
+  const cue = KIND_CUES[kind];
+  const extra = skillAffinity(skill);
+  const siblings: string[] = [];
+  const ts = canonical.technicalSkills as unknown;
+  if (ts && typeof ts === "object" && !Array.isArray(ts)) {
+    for (const v of Object.values(ts as Record<string, string[] | string>)) {
+      const arr = Array.isArray(v) ? v.map(String) : String(v).split(/,\s*/);
+      if (arr.some((x) => x.trim().toLowerCase() === skill.trim().toLowerCase())) siblings.push(...arr);
+    }
+  }
+  const siblingRes = siblings
+    .filter((x) => x.trim().length >= 2 && x.trim().toLowerCase() !== skill.trim().toLowerCase())
+    .map(literalSkillRegex);
+
+  const lists: string[][] = [];
+  for (const exp of canonical.experience) {
+    for (const sub of exp.subheadings || []) if (Array.isArray(sub.bullets)) lists.push(sub.bullets);
+    if (Array.isArray(exp.bullets)) lists.push(exp.bullets);
+  }
+  for (const proj of canonical.projects || []) if (Array.isArray(proj.bullets)) lists.push(proj.bullets);
+
+  let best: { list: string[]; idx: number; score: number } | null = null;
+  for (const list of lists) {
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (!b || b.length < 25 || re.test(b)) continue;
+      let score = (cue.test(b) ? 3 : 0) + (extra && extra.test(b) ? 3 : 0);
+      score += siblingRes.filter((r) => r.test(b)).length * 2;
+      score -= (used.get(b) ?? 0) * 5;
+      score += Math.min(1, b.length / 300);
+      if (!best || score > best.score) best = { list, idx: i, score };
+    }
+  }
+  if (!best) return false;
+
+  const old = best.list[best.idx].trimEnd();
+  const terminal = /[.!]$/.test(old) ? old.slice(-1) : "";
+  const body = terminal ? old.slice(0, -1) : old;
+  const prior = used.get(old) ?? 0;
+  const s = skill.trim();
+  const isRest = /^rest/i.test(s);
+  const prefix =
+    kind === "frontend" ? "with the client side built in"
+    : kind === "data" ? "with data persisted in"
+    : isRest ? "with services exposed through"
+    : kind === "api" ? "with the service layer built on"
+    : kind === "delivery" ? "with delivery handled through"
+    : "implemented with";
+  const item = isRest && !/apis?$/i.test(s) ? `${s} APIs` : s;
+  // Same kind of clause already woven into this bullet: extend its list instead of stacking a second clause
+  const existing = body.match(new RegExp("^(.*,\\s*" + prefix.replace(/ /g, "\\s+") + "\\s+)([^,]+(?:,\\s*[^,]+)*?)$"));
+  let next: string;
+  if (existing) {
+    const items = existing[2].replace(/,?\s+and\s+/g, ", ").split(/,\s*/).map((x) => x.trim()).filter(Boolean);
+    items.push(item);
+    const joined = items.length === 2 ? `${items[0]} and ${items[1]}` : `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
+    next = `${existing[1]}${joined}${terminal}`;
+  } else {
+    next = `${body}, ${prefix} ${item}${terminal}`;
+  }
+  best.list[best.idx] = next;
+  used.set(next, prior + 1);
+  return true;
+}
+
+function weaveSkillIntoCanonical(canonical: CanonicalResume, skill: string, primaryOnlyPass = false): boolean {
+  const re = literalSkillRegex(skill);
+  for (const primaryOnly of primaryOnlyPass ? [true] : [true, false]) {
     for (const exp of canonical.experience) {
       for (const sub of exp.subheadings || []) {
         const res = weaveSkillIntoExperienceBullets(sub.bullets, skill, { primaryOnly });
@@ -2679,6 +2926,8 @@ export function enforceStrictTwiceRule(
   const removed: string[] = [];
   const unresolved: string[] = [];
   const seen = new Set<string>();
+  const usedBullets = new Map<string, number>();
+  const pending: string[] = [];
 
   for (const skill of targetSkills) {
     const key = skill.trim().toLowerCase();
@@ -2686,21 +2935,25 @@ export function enforceStrictTwiceRule(
     seen.add(key);
 
     const re = literalSkillRegex(skill);
-    const listed = technicalSkillsFlat(canonical).some((s) => s.toLowerCase() === key || re.test(s));
+    const listed = technicalSkillsFlat(canonical).some(
+      (s) => s.toLowerCase() === key || re.test(s) || (/^tailwind(?: ?css)?$/.test(key) && /^tailwind(?: ?css)?$/i.test(s.trim()))
+    );
     if (!listed) continue;
     // Demonstrated anywhere in work experience OR projects counts: never force it into unrelated bullets.
     if (demonstrationLines(canonical).some((b) => re.test(b))) continue;
 
-    const ok = weaveSkillIntoCanonical(canonical, skill);
+    const ok =
+      weaveSkillIntoCanonical(canonical, skill, true) ||
+      weaveSkillByBestFit(canonical, skill, usedBullets, !options.addedFromJD?.has(key));
+    if (ok) woven.push(skill);
+    else pending.push(skill);
+  }
 
-    if (ok) {
-      woven.push(skill);
-    } else if (options.addedFromJD?.has(key)) {
-      removeSkillFromTechnicalSkills(canonical, skill);
-      removed.push(skill);
-    } else {
-      unresolved.push(skill);
-    }
+  // Phase 2: every skill that sits in Technical Skills must also appear in Experience/Projects. Natural rewrites
+  // above get first pick of the bullets; whatever is left is integrated into the best-fitting existing bullet.
+  for (const skill of pending) {
+    if (weaveSkillGuaranteed(canonical, skill, usedBullets)) woven.push(skill);
+    else unresolved.push(skill); // only when the resume has no experience/project bullets at all
   }
   return { woven, removed, unresolved };
 }
@@ -2973,7 +3226,7 @@ export function runAllRemediationPasses(params: {
     const strict = enforceStrictTwiceRule(canonical, strictTargets, { addedFromJD: strictAddedFromJD });
     twicePromotions += strict.woven.length;
     skillReport = classifyJDSkills(canonical, jdReqsFinal);
-    skillReport.unsupported = strict.removed;
+    skillReport.unsupported = strict.unresolved.filter((k) => strictAddedFromJD.has(k.trim().toLowerCase()));
     protectedSkills = strictTargets;
 
     // JD-driven positioning: detect the role the JD hires for, then lead with the most relevant verified content

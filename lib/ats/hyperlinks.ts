@@ -1,3 +1,4 @@
+import "@/lib/ats/pdf-polyfill";
 import { z } from "zod";
 import { parseBalancedBraces } from "./latex-text";
 

@@ -1,3 +1,4 @@
+import "@/lib/ats/pdf-polyfill";
 import * as crypto from "crypto";
 import { compileLatexToPdfBuffer, generateATSLatex } from "./tailor";
 import { extractHyperlinksFromMarkdownText, validatePdfHyperlinks } from "./hyperlinks";

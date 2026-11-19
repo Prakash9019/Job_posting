@@ -1,3 +1,4 @@
+import "@/lib/ats/pdf-polyfill";
 import { GoogleGenAI } from "@google/genai";
 import {
   generateATSLatex,

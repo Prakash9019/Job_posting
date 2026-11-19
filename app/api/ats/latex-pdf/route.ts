@@ -1,3 +1,4 @@
+import "@/lib/ats/pdf-polyfill";
 import dns from "node:dns";
 try { dns.setDefaultResultOrder("ipv4first"); } catch {}
 try {

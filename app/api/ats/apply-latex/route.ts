@@ -1,3 +1,4 @@
+import "@/lib/ats/pdf-polyfill";
 import { NextRequest, NextResponse } from "next/server";
 import { applyImprovementsToLatexWithAI } from "@/lib/ats/apply-latex";
 import { scoreResume, extractRequirementsFromJobText } from "@/lib/ats/scoring";
