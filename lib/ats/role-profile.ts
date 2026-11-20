@@ -647,7 +647,8 @@ export function validateEmailAgainstCandidate(params: {
   }
   const nameTokens = (identity.fullName || "").toLowerCase().split(/\s+/).filter((t) => t.length > 1);
   if (nameTokens.length > 0) {
-    const signoff = body.match(/(?:best regards|regards|sincerely|thanks|thank you),?\s*\n+\s*([^\n]+)\s*$/i)?.[1]?.trim();
+    // The sign-off line may be followed by the candidate's profile links, so match the last sign-off anywhere.
+    const signoff = Array.from(body.matchAll(/^[ \t]*(?:best regards|kind regards|warm regards|regards|sincerely|thanks|thank you)[,!.]?[ \t]*\n+[ \t]*([^\n]+)/gim)).pop()?.[1]?.trim();
     if (signoff && !signoff.toLowerCase().split(/\s+/).some((t) => nameTokens.includes(t))) {
       violations.push(`sign-off name "${signoff}" does not match the candidate "${identity.fullName}"`);
     }
@@ -672,6 +673,14 @@ export function validateEmailAgainstCandidate(params: {
   const company = (params.companyName || "").trim();
   if (company && !/^the hiring team$/i.test(company) && !mentions(body, company)) violations.push(`body never names the target company ${company}`);
   return Array.from(new Set(violations));
+}
+
+/**
+ * A resume bullet whose result was lost in editing ("boosting accuracy by an additional and aligning with ...").
+ * Such text must never be quoted in an email.
+ */
+export function isIncompleteBullet(text: string): boolean {
+  return /\bby\s+(?:an?\s+)?(?:additional|further|extra)\s*(?:and|while|which|,|;|\.|$)|\bby\s+(?:and|while|,)\s/i.test(String(text || ""));
 }
 
 const STOP_WORDS = new Set(["with", "that", "from", "this", "into", "over", "using", "their", "which", "while", "have", "been", "your", "were", "than", "such", "each", "also", "more"]);

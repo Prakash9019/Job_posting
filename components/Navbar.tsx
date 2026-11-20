@@ -21,6 +21,11 @@ export interface UserProfile {
   id: string;
   name: string;
   email: string | null;
+  noticePeriod?: string;
+  expectedCTC?: number | null;
+  currentCTC?: number | null;
+  availabilityDate?: string | null;
+  relocationPreferences?: string;
   gmailAccounts: {
     id: string;
     email: string;

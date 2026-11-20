@@ -4,6 +4,7 @@ import { extractResumeText } from "../lib/ai/resume";
 import { parseResumeToCanonical } from "../lib/ats/tailor";
 import { extractCompetencyMatrix } from "../lib/ats/parse";
 import { buildEvidenceUnits, detectRoleFamily, validateEmailAgainstCandidate } from "../lib/ats/role-profile";
+import { findPlainTextViolations } from "../lib/email/plain-text";
 
 const [resumePdf, ...shots] = process.argv.slice(2);
 (async () => {
@@ -33,7 +34,7 @@ const [resumePdf, ...shots] = process.argv.slice(2);
     const nums = Array.from(new Set(body.match(/\d[\d,.]*\s*(?:%|x|[KM]\+|\+)?/g) || [])).map((n) => n.trim()).filter((n) => /[%x+KM]/.test(n) || n.replace(/\D/g, "").length >= 3);
     const unsupported = nums.filter((n) => !norm(resumeText).includes(norm(n)));
     const words = body.trim().split(/\s+/).length;
-    console.log(`CHECKS: words=${words} bullets=${bullets.length} heading=${/My most relevant experience includes:/.test(body)} validatorViolations=${JSON.stringify(viol)} numbersNotInResume=${JSON.stringify(unsupported)} greeting="${body.split("\n")[0]}" recipient=${ex.recipientEmail}`);
+    console.log(`CHECKS: words=${words} bullets=${bullets.length} leadIn=${/:\n- /.test(body)} plainTextViolations=${JSON.stringify(findPlainTextViolations(body))} validatorViolations=${JSON.stringify(viol)} numbersNotInResume=${JSON.stringify(unsupported)} greeting="${body.split("\n")[0]}" recipient=${ex.recipientEmail}`);
   }
   console.warn = ow;
 })().catch((e) => { console.error(e); process.exit(1); });

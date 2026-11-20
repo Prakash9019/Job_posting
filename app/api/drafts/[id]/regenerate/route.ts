@@ -168,6 +168,13 @@ export async function POST(
       resumeText: effectiveResumeText,
       senderName: draft.user.name || "Applicant",
       senderEmail: draft.user.email || undefined,
+      applicationPreferences: draft.user ? {
+        noticePeriod: draft.user.noticePeriod,
+        expectedCTC: draft.user.expectedCTC,
+        currentCTC: draft.user.currentCTC,
+        availabilityDate: draft.user.availabilityDate,
+        relocationPreferences: draft.user.relocationPreferences,
+      } : undefined,
     });
 
     const updated = await prisma.emailDraft.update({

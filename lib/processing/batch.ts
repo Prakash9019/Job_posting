@@ -318,6 +318,13 @@ export async function processScreenshotItem(screenshotId: string): Promise<boole
             resumeText: effectiveResumeText,
             senderName: screenshot.batch.user.name || "Applicant",
             senderEmail: screenshot.batch.user.email || undefined,
+            applicationPreferences: screenshot.batch.user ? {
+              noticePeriod: screenshot.batch.user.noticePeriod,
+              expectedCTC: screenshot.batch.user.expectedCTC,
+              currentCTC: screenshot.batch.user.currentCTC,
+              availabilityDate: screenshot.batch.user.availabilityDate,
+              relocationPreferences: screenshot.batch.user.relocationPreferences,
+            } : undefined,
           });
 
           const existingDraft = await prisma.emailDraft.findFirst({ where: { screenshotId: screenshot.id } });

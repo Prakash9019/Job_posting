@@ -221,6 +221,13 @@ export async function POST(req: NextRequest) {
       resumeText: tailored.optimizedText,
       senderName: profile?.name || "Applicant",
       senderEmail: profile?.email || undefined,
+      applicationPreferences: profile ? {
+        noticePeriod: profile.noticePeriod,
+        expectedCTC: profile.expectedCTC,
+        currentCTC: profile.currentCTC,
+        availabilityDate: profile.availabilityDate,
+        relocationPreferences: profile.relocationPreferences,
+      } : undefined,
     });
 
     let batchId = body.batchId ? String(body.batchId) : undefined;

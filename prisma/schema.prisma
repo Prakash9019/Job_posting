@@ -16,6 +16,14 @@ model User {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
+  // Application Preferences
+  noticePeriod          String    @default("Immediate Joiner")
+  expectedCTC           Float?
+  currentCTC            Float?
+  availabilityDate      DateTime?
+  // Stored as a JSON string array
+  relocationPreferences String    @default("[\"Hyderabad\",\"Visakhapatnam\",\"Chennai\",\"Bangalore\"]")
+
   gmailAccounts GmailAccount[]
   resumes       Resume[]
   batches       Batch[]

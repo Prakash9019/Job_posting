@@ -1,12 +1,13 @@
 import { getStorageProvider } from "@/lib/storage";
 import { sanitizeOcrText } from "@/lib/ats/hyperlinks";
 import { CanonicalResume, getCandidateFilename, canonicalToPlainText, parseResumeToCanonical } from "@/lib/ats/tailor";
+import { assembleEmailBody } from "@/lib/email/compose";
 import {
-  ROLE_PROFILES,
   detectRoleFamily,
   rankAchievementsForRole,
   scoreTextForRole,
   joinNatural,
+  isIncompleteBullet,
   type RankedAchievement,
   type RoleFamily,
 } from "@/lib/ats/role-profile";
@@ -183,7 +184,9 @@ export function intersectSkillsWithResume(
 ): string[] {
   const evidence = getVerifiedResumeText(canonicalResume, resumeText);
   if (!evidence.trim()) return targetSkills;
-  return targetSkills.filter((sk) => skillAppearsVerbatim(evidence, sk));
+  // Singular/plural forms are the same skill ("LLM" on the JD, "LLMs" on the resume).
+  const variants = (sk: string) => [sk, `${sk}s`, ...(/[a-z]s$/i.test(sk) && sk.length > 3 ? [sk.slice(0, -1)] : [])];
+  return targetSkills.filter((sk) => variants(sk.trim()).some((v) => skillAppearsVerbatim(evidence, v)));
 }
 
 /** Skills on the resume (flattened Technical Skills) used to backfill when the JD overlap is thin. */
@@ -399,6 +402,16 @@ function safeParseCanonical(text: string): CanonicalResume | undefined {
   }
 }
 
+const TITLE_WORD = /^(?:engineer|developer|intern|lead|manager|scientist|analyst|architect|specialist|consultant|designer|associate|director|programmer|administrator|researcher|head|officer|i{1,3}|iv|sde|swe|cto|founder)$/i;
+
+/** Most recent job title for prose, without a location glued on by the parser ("AI Engineer Hyderabad" -> "AI Engineer"). */
+function cleanJobTitle(raw?: string): string {
+  const tokens = String(raw || "").replace(/[|,–—-]\s.*$/, "").trim().split(/\s+/).filter(Boolean);
+  while (tokens.length > 1 && !TITLE_WORD.test(tokens[tokens.length - 1])) tokens.pop();
+  const title = tokens.join(" ");
+  return tokens.length && tokens.length <= 5 && TITLE_WORD.test(tokens[tokens.length - 1]) ? title : "";
+}
+
 /** "LAKSHMI NARAYANA" -> "Lakshmi Narayana"; mixed-case names are left untouched. */
 export function toDisplayName(name: string): string {
   const n = name.trim().replace(/\s+/g, " ");
@@ -458,27 +471,35 @@ export async function generateTargetedColdEmail(params: {
     targetSkills = backfill.length > 0 ? backfill : ["Python"];
   }
 
-  // JD-driven positioning: the role family decides the pitch, and achievements are ranked for THAT role.
+  // JD-driven positioning: the role family decides which achievements are ranked first.
   const roleFamily: RoleFamily = detectRoleFamily(targetRoleTitle, jobProfile.jobDescription);
-  const profile = ROLE_PROFILES[roleFamily];
 
   // Only the candidate's own resume bullets are ever used as proof; there is no shared/reference achievement list.
   const ranked: RankedAchievement[] = canonicalResume ? rankAchievementsForRole(canonicalResume, roleFamily, targetSkills, 18) : [];
 
-  // Format: short role-specific intro, "My most relevant experience includes:" + 3-4 short bullets chosen from the
-  // candidate's own evidence for THIS job, then a brief close. Not every project is listed, only the strongest.
-  const BODY_WORD_LIMIT = 190;
+  // Format (same as the AI path): opening tied to the role, a lead-in, 3-4 short bullets from the candidate's own
+  // evidence for THIS job (one per project, employer named once), a brief close; attachment line, sign-off and
+  // verified links are assembled by assembleEmailBody. Incomplete resume lines are never quoted.
+  const BODY_WORD_LIMIT = 175;
   const wc = (t: string) => t.split(/\s+/).filter(Boolean).length;
-  const intro = `I am applying for ${targetRoleTitle ? `the ${targetRoleTitle} position` : "the open position"} at ${companyName}. My background in ${profile.domain}, including ${joinNatural(targetSkills.slice(0, 3))}, maps directly to your requirements.`;
-  const linkParts = [githubUrl ? `GitHub (${githubUrl})` : "", linkedinUrl ? `LinkedIn (${linkedinUrl})` : ""].filter(Boolean);
-  const linkSentence = linkParts.length > 0 ? ` You can also find me on ${linkParts.join(" and ")}.` : "";
-  const closing_ = `Please find the attached resume.${linkSentence} I look forward to speaking with your team.`;
-  const BULLET_HEADING = "My most relevant experience includes:";
+  const companyKnown = !/^the hiring team$/i.test(companyName);
+  const currentTitle = cleanJobTitle(canonicalResume?.experience?.[0]?.role);
+  const skillsPhrase = joinNatural(targetSkills.slice(0, 3));
+  const intro =
+    `I'm applying for ${targetRoleTitle ? `the ${targetRoleTitle} role` : "the open position"}${companyKnown ? ` at ${companyName}` : ""}. ` +
+    // Only verified facts here: the title actually held and JD skills that are on the resume (never the target
+    // role's domain asserted as the candidate's experience).
+    (currentTitle
+      ? `Most recently ${/^[aeiou]/i.test(currentTitle) ? "an" : "a"} ${currentTitle}, I bring hands-on experience with ${skillsPhrase}.`
+      : `I bring hands-on experience with ${skillsPhrase}.`);
+  const LEAD_IN = "Here is the work most relevant to your team:";
+  const closingLine = `I would welcome the chance to discuss how I can contribute to ${companyKnown ? companyName : "your team"}.`;
   const recipientGreeting = recipientGreeting_(jobProfile);
-  const fixedWords = wc(recipientGreeting) + wc(intro) + wc(BULLET_HEADING) + wc(closing_) + wc(`Best regards, ${candidateDisplayName}`);
+  const fixedWords = wc(recipientGreeting) + wc(intro) + wc(LEAD_IN) + wc(closingLine) + wc(`Please find the attached resume. Best regards, ${candidateDisplayName}`);
 
   // Selection: one bullet per project, strongest role/JD evidence first. Bullets whose own text proves the target
   // role are preferred; weaker ones only fill up to 3 so the recruiter always sees at least 3 points when they exist.
+  const usable = ranked.filter((c) => !isIncompleteBullet(c.clause));
   const projectKey = (c: RankedAchievement) => `${c.company}|${c.project}`;
   const isPrimary = (c: RankedAchievement) => scoreTextForRole(`${c.clause} ${c.techs.join(" ")}`, roleFamily, targetSkills) > 0;
   const chosen: RankedAchievement[] = [];
@@ -493,27 +514,26 @@ export async function generateTargetedColdEmail(params: {
       used += cost;
     }
   };
-  take(ranked.filter(isPrimary), 4);
-  if (chosen.length < 3) take(ranked, 3);
+  take(usable.filter(isPrimary), 4);
+  if (chosen.length < 3) take(usable, 3);
 
   // Subject: primary role title + candidate name only (no skills/domains); employer-mandated format honored.
   const subject = buildApplicationSubject({ roleTitle: targetRoleTitle, candidateName: candidateDisplayName, companyName: jobProfile.companyName, jobDescription: jobProfile.jobDescription });
 
-  // Each employer is named once (first bullet that uses it); later bullets of the same employer lead with the project.
+  // Each bullet is labelled with its project; the employer is named once (first bullet that uses it).
   const namedCompanies = new Set<string>();
+  const sentence = (clause: string) => `${clause.charAt(0).toUpperCase()}${clause.slice(1)}.`;
   const bullets = chosen.map((c) => {
+    if (c.standalone) return `- ${c.company} (project): ${sentence(c.clause)}`;
     const first = !namedCompanies.has(c.company);
     namedCompanies.add(c.company);
-    const lead = c.standalone
-      ? `In my ${c.company} project`
-      : first
-      ? (c.project && c.project !== c.company ? `At ${c.company} (${c.project})` : `At ${c.company}`)
-      : (c.project && c.project !== c.company ? `In ${c.project}` : "In the same role");
-    return `- ${lead}, I ${c.clause}.`;
+    const hasProject = !!c.project && c.project !== c.company;
+    if (hasProject) return `- ${c.project}${first ? ` (${c.company})` : ""}: ${sentence(c.clause)}`;
+    return first ? `- ${c.company}: ${sentence(c.clause)}` : `- ${sentence(c.clause)}`;
   });
 
-  const closing = `Best regards,\n${candidateDisplayName}`;
-  const fullBody = [recipientGreeting, intro, `${BULLET_HEADING}\n${bullets.join("\n")}`, closing_, closing].join("\n\n");
+  const content = [intro, `${LEAD_IN}\n${bullets.join("\n")}`, closingLine].join("\n\n");
+  const fullBody = assembleEmailBody(recipientGreeting, content, { candidateName: candidateDisplayName, githubUrl, linkedinUrl });
   const wordCount = fullBody.trim().split(/\s+/).filter(Boolean).length;
 
   return {

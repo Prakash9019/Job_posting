@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Navbar, { UserProfile } from "@/components/Navbar";
 import SenderSettings from "@/components/SenderSettings";
+import ApplicationPreferences from "@/components/ApplicationPreferences";
 import ATSReviewTab from "@/components/tabs/ATSReviewTab";
 import SummaryCards, { SummaryStats } from "@/components/SummaryCards";
 import EmailsTab, { EmailDraftItem } from "@/components/tabs/EmailsTab";
@@ -335,7 +336,12 @@ export default function DashboardPage() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6">
-        {currentUser && <SenderSettings key={currentUser.id} user={currentUser} onSaved={fetchData} />}
+        {currentUser && (
+          <>
+            <SenderSettings key={`${currentUser.id}-sender`} user={currentUser} onSaved={fetchData} />
+            <ApplicationPreferences key={`${currentUser.id}-prefs`} user={currentUser} onSaved={fetchData} />
+          </>
+        )}
         {/* Welcome / Context Banner */}
         <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>

@@ -2,7 +2,7 @@
  * Offline regression checks (no network / DB):
  *  1. Split-screen screenshot: a YouTube course title must never become the job title.
  *  2. Other job-post layouts (single post, application portal, clipped post, no regions).
- *  3. Email format: short intro + "My most relevant experience includes:" + 3-4 concise bullets.
+ *  3. Email format: short intro + lead-in + 3-4 concise bullets + attachment line + sign-off with verified links.
  *
  * The vision model is simulated with the raw outputs it could plausibly return for the regression screenshot
  * (a naive one that picks the prominent YouTube title, and a region-aware one).
@@ -10,6 +10,7 @@
 import { applyScreenshotRegionGuards, type ScreenshotRegion } from "../lib/ats/screenshot-regions";
 import { generateTargetedColdEmail, buildApplicationSubject, resolveRecipientName } from "../lib/ai/resume";
 import { buildEvidenceUnits, findRepeatedProjectBullets } from "../lib/ats/role-profile";
+import { findPlainTextViolations } from "../lib/email/plain-text";
 import type { CanonicalResume } from "../lib/ats/tailor";
 
 const errors: string[] = [];
@@ -157,12 +158,15 @@ async function emailChecks() {
     const lines = draft.body.split("\n");
     const bullets = lines.filter((l) => l.startsWith("- "));
     check(draft.body.startsWith("Hi Priya,"), `${c.name}: greeting`);
-    check(lines.includes("My most relevant experience includes:"), `${c.name}: heading missing`);
+    check(lines.some((l, i) => /:$/.test(l) && lines[i + 1]?.startsWith("- ")), `${c.name}: lead-in line before the bullets missing`);
+    check(findPlainTextViolations(draft.body).length === 0, `${c.name}: not plain text: ${findPlainTextViolations(draft.body)}`);
+    check(!/maps directly|I am writing to|My most relevant experience includes/i.test(draft.body), `${c.name}: template/cliche phrasing`);
     check(bullets.length >= 3 && bullets.length <= 4, `${c.name}: expected 3-4 bullets, got ${bullets.length}`);
     check(bullets.every((b) => b.split(/\s+/).length <= 48), `${c.name}: bullet too long`);
     check(draft.body.includes("Please find the attached resume."), `${c.name}: attachment phrase`);
     check(!/\.pdf/i.test(draft.body), `${c.name}: filename in body`);
-    check(draft.body.trim().endsWith(c.cand), `${c.name}: sign-off name`);
+    check(/\nBest regards,\n/.test(draft.body) && lines[lines.indexOf("Best regards,") + 1] === c.cand, `${c.name}: sign-off name`);
+    check(draft.body.includes(`GitHub: ${c.resume.githubUrl}`) && (!c.resume.linkedinUrl ? !/LinkedIn:/.test(draft.body) : draft.body.includes(`LinkedIn: ${c.resume.linkedinUrl}`)), `${c.name}: verified profile links`);
     // An employer-mandated subject ("FDE - Your Name") must be honored verbatim; otherwise the default format applies.
     check(draft.subject.includes(c.cand), `${c.name}: subject lacks candidate name`);
     check(c.jd.includes("subject") ? draft.subject === "FDE - Ada Example" : draft.subject.includes(c.role), `${c.name}: subject`);
